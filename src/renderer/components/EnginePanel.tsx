@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../state/store';
-import { BLACK, WHITE, type AnalysisSnapshot } from '../../shared/types';
+import { BLACK, WHITE, type AnalysisMove, type AnalysisSnapshot } from '../../shared/types';
 
 function blackView(snapshot: AnalysisSnapshot | null): { winrate: number; lead: number } {
   if (!snapshot) return { winrate: 0.5, lead: 0 };
@@ -13,7 +13,7 @@ export interface EnginePanelProps {
   snapshot: AnalysisSnapshot | null;
   onShowOwnership: (v: boolean) => void;
   showOwnership: boolean;
-  onPickCandidate: (move: string) => void;
+  onPickCandidate: (c: AnalysisMove) => void;
   style?: React.CSSProperties;
 }
 
@@ -146,7 +146,7 @@ export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCa
           ) : (
             <div className="candidates">
               {candidates.map((c, i) => (
-                <div key={c.move + i} className={'cand' + (i === 0 ? ' top' : '')} onClick={() => onPickCandidate(c.move)}>
+                <div key={c.move + i} className={'cand' + (i === 0 ? ' top' : '')} onClick={() => onPickCandidate(c)}>
                   <span className="move">{c.move}</span>
                   <span className="bar">
                     <i style={{ width: `${Math.round((c.visits / maxVisits) * 100)}%` }} />

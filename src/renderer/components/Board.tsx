@@ -19,6 +19,8 @@ interface BoardProps {
   ownership?: number[] | null;
   candidates?: Candidate[];
   hintMove?: string | null;
+  /** 推荐点属于哪一方。画成同色的幽灵子，看图就知道是建议谁走。 */
+  hintColor?: 1 | 2 | null;
   dead?: number[];
   showCoords?: boolean;
   showNumbers?: boolean;
@@ -101,6 +103,7 @@ export function Board({
   ownership = null,
   candidates = [],
   hintMove = null,
+  hintColor = null,
   dead = [],
   showCoords = true,
   showNumbers = false,
@@ -421,11 +424,15 @@ export function Board({
       }
     }
 
-    // 推荐提示
+    // 推荐提示：一个该走的那一方的幽灵子 + 金圈。只给建议，不落子。
     if (hintMove) {
       const p = parseVertex(hintMove, size);
-      if (p !== PASS) {
+      if (p !== PASS && p >= 0 && p < size * size && position.cells[p] === EMPTY) {
         const [cx, cy] = at(p);
+        const sprite = hintColor === WHITE ? whiteSprite : blackSprite;
+        ctx.globalAlpha = 0.45;
+        ctx.drawImage(sprite.canvas, cx - sprite.size / 2, cy - sprite.size / 2, sprite.size, sprite.size);
+        ctx.globalAlpha = 1;
         ctx.strokeStyle = 'rgba(217,164,65,0.95)';
         ctx.lineWidth = Math.max(2, step * 0.07);
         ctx.setLineDash([step * 0.16, step * 0.12]);
@@ -468,6 +475,7 @@ export function Board({
     ownership,
     candidates,
     hintMove,
+    hintColor,
     dead,
     deadSet,
     showCoords,

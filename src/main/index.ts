@@ -257,7 +257,8 @@ function buildMenu(): void {
         { label: '停一手', accelerator: 'CmdOrCtrl+P', click: cmd('pass') },
         { label: '认输', click: cmd('resign') },
         { type: 'separator' },
-        { label: '提示一手', accelerator: 'CmdOrCtrl+H', click: cmd('hint') },
+        { label: '提示一手（只建议，不落子）', accelerator: 'CmdOrCtrl+H', click: cmd('hint') },
+        { label: '让 AI 走一手', click: cmd('aiMove') },
         { label: '开始 / 暂停分析', accelerator: 'CmdOrCtrl+Shift+A', click: cmd('toggleAnalysis') },
         { label: '全谱分析', click: cmd('analyzeGame') },
         { label: '形势判断', accelerator: 'CmdOrCtrl+E', click: cmd('score') }
@@ -332,7 +333,9 @@ function registerIpc(): void {
   });
   ipcMain.handle(CH.engineSync, async (_e, sgf: string) => engine.sync(sgf));
   ipcMain.handle(CH.engineGenMove, async (_e, req: Parameters<EngineManager['genMove']>[0]) => engine.genMove(req));
-  ipcMain.handle(CH.engineHint, async (_e, sgf: string, visits: number, color: 'B' | 'W') => engine.hint(sgf, visits, color));
+  ipcMain.handle(CH.engineHint, async (_e, sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number) =>
+    engine.hint(sgf, visits, color, maxTimeMs)
+  );
   ipcMain.handle(CH.engineAnalyzeStart, async (_e, req: Parameters<EngineManager['analyze']>[0]) => engine.analyze(req));
   ipcMain.handle(CH.engineAnalyzeStop, async () => {
     engine.stopAnalysis();

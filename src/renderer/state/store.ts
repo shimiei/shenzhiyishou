@@ -15,6 +15,7 @@ import type { AppInfo } from '../../shared/protocol';
 import {
   addChild,
   addMoveNode,
+  canSetTurn,
   colorToPlayAt,
   createTree,
   deleteSubtree,
@@ -25,11 +26,14 @@ import {
   moveNumberAt,
   pathTo,
   positionAt,
+  positionKey,
   propNum,
   setProp,
+  setTurnAt,
   type Mark,
   type MarkType
 } from '../core/sgf/tree';
+import { adviceLine, colorName, isPassMove, type Advice } from '../core/advice';
 import { cloneTree } from '../core/sgf/serialize';
 import { engineSgfFor } from '../core/sgf/engineSgf';
 import { parseSgf } from '../core/sgf/parse';
@@ -98,7 +102,8 @@ interface AppStore {
   analysis: AnalysisSnapshot | null;
   analyzing: boolean;
   thinking: boolean;
-  hintMove: string | null;
+  /** 手里这条推荐，带颜色。盘面一变就作废，不会留在旧局面的点上。 */
+  hint: Advice | null;
   engineLogs: string[];
 
   game: GameConfig;
@@ -136,10 +141,15 @@ interface AppStore {
   play: (point: number) => void;
   playColor: (color: 1 | 2, point: number) => void;
   pass: () => void;
-  playAiMove: (force?: boolean) => Promise<void>;
+  playAiMove: (force?: boolean) => Promise<string | null>;
   maybeAiTurn: () => Promise<void>;
+  /** 让引擎按当前行棋方走一手，走完就停，不接着自动走。 */
+  aiMoveNow: () => Promise<void>;
   doHint: () => Promise<void>;
-  setHint: (move: string | null) => void;
+  setHint: (advice: Advice | null) => void;
+  /** 候选点面板点一下，把它当推荐画到棋盘上。 */
+  pickCandidate: (move: string, winrate: number, scoreLead: number) => void;
+  setTurn: (color: 1 | 2) => void;
   resign: () => void;
 
   newGame: (opts: Partial<GameConfig> & { size?: number; komi?: number; handicap?: number; rules?: string }) => void;
@@ -248,7 +258,7 @@ export const useStore = create<AppStore>((set, get) => ({
   analysis: null,
   analyzing: false,
   thinking: false,
-  hintMove: null,
+  hint: null,
   engineLogs: [],
 
   game: { mode: 'manual', humanColor: BLACK, visits: 400, timeMs: 3000, temperature: 0, allowResign: true },
@@ -343,14 +353,19 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   commit(tree, current) {
-    const cur = get().current;
+    const prev = get();
+    const cur = prev.current;
     const nextCurrent = current ?? (tree.nodes[cur] ? cur : tree.root);
+    // 盘面变了（落了子、摆了子、提了子）推荐就作废；只改注释标记时留着，
+    // 那条推荐还是这个局面的。
+    const sameBoard = prev.hint !== null && positionKey(tree, nextCurrent) === positionKey(prev.tree, cur);
     set({
       tree,
       current: nextCurrent,
       past: [...get().past.slice(-120), get().tree],
       future: [],
-      dirty: true
+      dirty: true,
+      hint: sameBoard ? prev.hint : null
     });
   },
 
@@ -397,7 +412,8 @@ export const useStore = create<AppStore>((set, get) => ({
       current: endNode,
       past: past2,
       future: [get().tree, ...get().future].slice(0, 120),
-      dirty: true
+      dirty: true,
+      hint: null
     });
   },
 
@@ -418,13 +434,14 @@ export const useStore = create<AppStore>((set, get) => ({
       current: endNode,
       past: [...get().past, tree],
       future: future.slice(1),
-      dirty: true
+      dirty: true,
+      hint: null
     });
   },
 
   goto(id) {
     if (!get().tree.nodes[id]) return;
-    set({ current: id, hintMove: null });
+    set({ current: id, hint: null });
   },
 
   gotoStep(delta) {
@@ -492,12 +509,12 @@ export const useStore = create<AppStore>((set, get) => ({
     }
   },
 
-  async playAiMove(force = false) {
+  async playAiMove(force = false): Promise<string | null> {
     const { tree, current, game, finished } = get();
-    if (finished || get().thinking) return;
+    if (finished || get().thinking) return null;
     const color = colorToPlayAt(tree, current);
     const aiColor = (3 - game.humanColor) as 1 | 2;
-    if (!force && color !== aiColor && game.mode !== 'ai-vs-ai') return;
+    if (!force && color !== aiColor && game.mode !== 'ai-vs-ai') return null;
     const nodeAtRequest = current;
     get().setThinking(true);
     try {
@@ -509,10 +526,10 @@ export const useStore = create<AppStore>((set, get) => ({
         allowResign: game.allowResign,
         temperature: game.temperature
       });
-      if (get().current !== nodeAtRequest) return; // 用户已经切换了节点
+      if (get().current !== nodeAtRequest) return null; // 用户已经切换了节点
       if (res.error) {
         get().toast('引擎出错：' + res.error, 'error');
-        return;
+        return null;
       }
       if (res.resigned) {
         const winner = color === BLACK ? '白' : '黑';
@@ -520,17 +537,35 @@ export const useStore = create<AppStore>((set, get) => ({
         const t = get().tree;
         get().commit(setProp(t, t.root, 'RE', [`${winner === '黑' ? 'B' : 'W'}+R`]), get().current);
         get().toast(`${color === BLACK ? '黑方' : '白方'}认输，${winner}中盘胜`, 'success');
-        return;
+        return null;
       }
       const size = propNum(tree, tree.root, 'SZ', 19);
       const point = Position.parseVertex(res.move, size);
       const r2 = addMoveNode(get().tree, get().current, color, point, { mainLine: true });
       get().commit(r2.tree, r2.id);
       if (get().game.mode === 'ai-vs-ai') setTimeout(() => void get().maybeAiTurn(), 400);
+      return res.move;
     } catch (e) {
       get().toast('引擎出错：' + (e instanceof Error ? e.message : String(e)), 'error');
+      return null;
     } finally {
       get().setThinking(false);
+    }
+  },
+
+  async aiMoveNow() {
+    const { finished } = get();
+    if (finished) {
+      get().toast('这盘已经结束了', 'info');
+      return;
+    }
+    const { tree, current } = get();
+    const color = colorToPlayAt(tree, current);
+    if (get().thinking) return;
+    set({ hint: null });
+    const move = await get().playAiMove(true);
+    if (move !== null) {
+      get().toast(`${colorName(color)}方 AI 走了 ${isPassMove(move) ? '停一手' : move}`, 'info');
     }
   },
 
@@ -547,21 +582,61 @@ export const useStore = create<AppStore>((set, get) => ({
     if (color === aiColor) void get().playAiMove();
   },
 
+  /**
+   * 提示只是给建议，绝不落子：落子要么用户自己点棋盘，要么点"AI 走一手"。
+   * 计算期间占住 thinking，连点不会排出一串引擎请求，也不会刷出一串重复提示。
+   */
   async doHint() {
-    const { tree, current } = get();
+    const { tree, current, thinking } = get();
+    if (thinking) return;
     const color = colorToPlayAt(tree, current);
-    get().toast('正在计算推荐点…');
-    const res = await window.api.engine.hint(sgfFor(tree, current), get().settings.analyzeVisits, color === BLACK ? 'B' : 'W');
-    if (res.error) {
-      get().toast('引擎出错：' + res.error, 'error');
-      return;
+    get().setThinking(true);
+    try {
+      const { settings } = get();
+      const res = await window.api.engine.hint(
+        sgfFor(tree, current),
+        settings.analyzeVisits,
+        color === BLACK ? 'B' : 'W',
+        // 提示也要带时限：大网络上一手提示跑几十秒会让人以为卡住。用每步限时那一档。
+        settings.playTimeMs
+      );
+
+      if (get().current !== current) return; // 用户已经翻到别的局面去了
+      if (res.error) {
+        get().toast('引擎出错：' + res.error, 'error');
+        return;
+      }
+      const advice: Advice = { color, move: res.move, winrate: res.winrate, scoreLead: res.scoreLead };
+      set({ hint: advice });
+      get().toast(adviceLine(advice));
+    } catch (e) {
+      get().toast('引擎出错：' + (e instanceof Error ? e.message : String(e)), 'error');
+    } finally {
+      get().setThinking(false);
     }
-    set({ hintMove: res.move });
-    get().toast(`推荐 ${res.move}，胜率 ${(res.winrate * 100).toFixed(1)}%，目差 ${res.scoreLead.toFixed(1)}`);
   },
 
-  setHint(move) {
-    set({ hintMove: move });
+  setHint(advice) {
+    set({ hint: advice });
+  },
+
+  pickCandidate(move, winrate, scoreLead) {
+    const { tree, current } = get();
+    set({ hint: { color: colorToPlayAt(tree, current), move, winrate, scoreLead } });
+  },
+
+  /** 导入的图、自己摆的局面，程序不知道轮到谁，这里手改。有手数时改不了，会说明原因。 */
+  setTurn(color) {
+    const { tree, current } = get();
+    const ready = canSetTurn(tree, current);
+    if (!ready.ok) {
+      get().toast(ready.reason ?? '现在改不了轮次', 'info');
+      return;
+    }
+    if (colorToPlayAt(tree, current) === color) return;
+    get().commit(setTurnAt(tree, current, color), current);
+    set({ hint: null });
+    get().toast(`已改为${colorName(color)}方先行`, 'success');
   },
 
   resign() {
@@ -591,7 +666,7 @@ export const useStore = create<AppStore>((set, get) => ({
       analysis: null,
       finished: null,
       deadStones: [],
-      hintMove: null,
+      hint: null,
       game: { ...get().game, ...opts, humanColor }
     });
     void get().maybeAiTurn();

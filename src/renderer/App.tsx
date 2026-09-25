@@ -55,7 +55,7 @@ export function App(): React.ReactElement {
   const dismissToast = useStore((s) => s.dismissToast);
   const hover = useStore((s) => s.hover);
   const setHover = useStore((s) => s.setHover);
-  const hintMove = useStore((s) => s.hintMove);
+  const hint = useStore((s) => s.hint);
   const tool = useStore((s) => s.tool);
   const setTool = useStore((s) => s.setTool);
   const thinking = useStore((s) => s.thinking);
@@ -179,6 +179,9 @@ export function App(): React.ReactElement {
           break;
         case 'hint':
           void s.doHint();
+          break;
+        case 'aiMove':
+          void s.aiMoveNow();
           break;
         case 'toggleAnalysis':
           void s.toggleAnalysis();
@@ -394,7 +397,8 @@ export function App(): React.ReactElement {
                 hover={hover}
                 ownership={showOwnership ? (snapshot?.ownership ?? null) : null}
                 candidates={candidates}
-                hintMove={hintMove}
+                hintMove={hint?.move ?? null}
+                hintColor={hint?.color ?? null}
                 showCoords={settings.coords}
                 showNumbers={settings.moveNumbers}
                 numbers={numbers}
@@ -437,7 +441,7 @@ export function App(): React.ReactElement {
           snapshot={snapshot}
           showOwnership={showOwnership}
           onShowOwnership={setShowOwnership}
-          onPickCandidate={(move) => useStore.getState().setHint(move)}
+          onPickCandidate={(c) => useStore.getState().pickCandidate(c.move, c.winrate, c.scoreLead)}
         />
       </div>
       <StatusBar />

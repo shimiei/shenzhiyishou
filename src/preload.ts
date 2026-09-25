@@ -19,7 +19,8 @@ const api: Api = {
     analyzeStart: (req: AnalyzeRequest) => ipcRenderer.invoke(CH.engineAnalyzeStart, req),
     analyzeStop: () => ipcRenderer.invoke(CH.engineAnalyzeStop),
     benchmark: (modelId: string, backend: BackendName) => ipcRenderer.invoke(CH.engineBenchmark, modelId, backend),
-    hint: (sgf: string, visits: number, color: 'B' | 'W') => ipcRenderer.invoke(CH.engineHint, sgf, visits, color),
+    hint: (sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number) =>
+      ipcRenderer.invoke(CH.engineHint, sgf, visits, color, maxTimeMs),
     onEvent: (cb: (e: EngineEvent) => void) => on<EngineEvent>(CH.engineEvent, cb)
   },
   models: {

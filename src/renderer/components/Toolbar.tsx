@@ -25,6 +25,7 @@ export function Toolbar(): React.ReactElement {
   const pass = useStore((s) => s.pass);
   const resign = useStore((s) => s.resign);
   const doHint = useStore((s) => s.doHint);
+  const aiMoveNow = useStore((s) => s.aiMoveNow);
   const toggleAnalysis = useStore((s) => s.toggleAnalysis);
   const toast = useStore((s) => s.toast);
   const analyzing = useStore((s) => s.analyzing);
@@ -110,8 +111,11 @@ export function Toolbar(): React.ReactElement {
         认输
       </button>
       <div className="tb-sep" />
-      <button className="btn" disabled={thinking} onClick={() => void doHint()} title="提示一手（H）">
+      <button className="btn" disabled={thinking} onClick={() => void doHint()} title="推荐现在这一方的一手，标明黑白；只给建议，不替你落子（H）">
         提示
+      </button>
+      <button className="btn" disabled={thinking || Boolean(finished)} onClick={() => void aiMoveNow()} title="让引擎替现在这一方走一手，走完就停；辅助模式下用它当对手（空格）">
+        AI 走一手
       </button>
       <button
         className={'btn' + (analyzing ? ' primary' : '')}

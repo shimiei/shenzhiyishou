@@ -220,6 +220,28 @@ export function colorToPlayAt(tree: GameTree, id: number): 1 | 2 {
   return color;
 }
 
+/** 盘面指纹，只认棋子，不认注释和标记。用来判断手里那条推荐还算不算数。 */
+export function positionKey(tree: GameTree, id: number): string {
+  const pos = positionAt(tree, id);
+  return String(pos.size) + ':' + Array.from(pos.cells).join('');
+}
+
+/**
+ * "现在轮到谁"能不能手改。有手数时轮次由手数决定（SGF 里也是这样，PL 会被手数盖掉），
+ * 所以只有摆子局面（导入的图、自己摆的开局）能改。
+ */
+export function canSetTurn(tree: GameTree, id: number): { ok: boolean; reason?: string } {
+  for (const nid of pathTo(tree, id)) {
+    if (moveAtSized(tree, nid)) return { ok: false, reason: '这盘已经有手数了，轮次跟着手数走，改不了' };
+  }
+  return { ok: true };
+}
+
+/** 把轮次写进当前节点，之后 colorToPlayAt 与送引擎的局面都认这个。 */
+export function setTurnAt(tree: GameTree, id: number, color: 1 | 2): GameTree {
+  return setProp(tree, id, 'PL', [color === BLACK ? 'B' : 'W']);
+}
+
 export function marksAt(tree: GameTree, id: number): Mark[] {
   const n = tree.nodes[id];
   if (!n) return [];

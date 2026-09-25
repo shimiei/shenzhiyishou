@@ -69,7 +69,7 @@ export function useShortcuts(): void {
           break;
         case ' ':
           e.preventDefault();
-          void s.playAiMove(true);
+          void s.aiMoveNow();
           break;
         case '+':
         case '=':

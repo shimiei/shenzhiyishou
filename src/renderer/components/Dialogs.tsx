@@ -97,7 +97,7 @@ function NewGameDialog({ onClose }: { onClose: () => void }): React.ReactElement
           <label>对弈方式</label>
           <div className="seg">
             <button className={'seg-item' + (mode === 'manual' ? ' active' : '')} onClick={() => setMode('manual')}>
-              自由摆谱
+              辅助
             </button>
             <button className={'seg-item' + (mode === 'vs-ai' ? ' active' : '')} onClick={() => setMode('vs-ai')}>
               人机对局
@@ -105,6 +105,13 @@ function NewGameDialog({ onClose }: { onClose: () => void }): React.ReactElement
             <button className={'seg-item' + (mode === 'ai-vs-ai' ? ' active' : '')} onClick={() => setMode('ai-vs-ai')}>
               机机对局
             </button>
+          </div>
+          <div className="small faint" style={{ marginTop: 6 }}>
+            {mode === 'manual'
+              ? '辅助：AI 不自己落子，按 H 或点提示拿建议（会标明是给黑方还是白方的），自己下。想让 AI 顶一手就按空格或点 AI 走一手。'
+              : mode === 'vs-ai'
+                ? '人机对局：AI 自动走你对手那一方，你只下自己那一手。'
+                : '机机对局：双方都交给 AI 自动走，拿来看棋。'}
           </div>
         </div>
       </div>
@@ -765,8 +772,8 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }): React.ReactEleme
     ['↑ ↓', '跳到开局 / 跳到最后'],
     ['Ctrl+Z / Ctrl+Y', '撤销 / 重做'],
     ['P', '停一手'],
-    ['空格', '让引擎走一手'],
-    ['H', '提示一手'],
+    ['空格', '让 AI 替现行棋方走一手'],
+    ['H', '提示现行棋方一手（标明黑白，不落子）'],
     ['A', '开始或暂停实时分析'],
     ['E', '形势判断与数子'],
     ['C', '显示或隐藏坐标'],

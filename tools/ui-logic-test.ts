@@ -7,9 +7,20 @@
 import { BLACK, WHITE, type GameTree, type SgfProps } from '../src/shared/types';
 import { closeTab, makeTab, openTab, stepTab, tabTitle, type BrowserTab } from '../src/renderer/core/browser/tabs';
 import { normalizeUrl } from '../src/renderer/core/browser/url';
+import { adviceChip, adviceLine, isPassMove, leadText } from '../src/renderer/core/advice';
 import { engineSgfFor } from '../src/renderer/core/sgf/engineSgf';
 import { parseSgf } from '../src/renderer/core/sgf/parse';
-import { addChild, addMoveNode, colorToPlayAt, createTree, positionAt, setProp } from '../src/renderer/core/sgf/tree';
+import {
+  addChild,
+  addMoveNode,
+  canSetTurn,
+  colorToPlayAt,
+  createTree,
+  positionAt,
+  positionKey,
+  setProp,
+  setTurnAt
+} from '../src/renderer/core/sgf/tree';
 import {
   DEFAULT_LEFT,
   DEFAULT_RIGHT,
@@ -313,6 +324,70 @@ section('分栏：棋盘与浏览器的比例');
   // 保底真的起作用的边界：可用宽度刚好 565
   const tight = fitSplit(0.9, 570);
   eq(Math.round((1 - tight) * 565) >= 260, true, '刚好够保底时，浏览器那侧还是留出 260');
+}
+
+section('建议：每一句都要说清是给哪一方的');
+{
+  eq(
+    adviceLine({ color: BLACK, move: 'D16', winrate: 0.523, scoreLead: 1.04 }),
+    '黑棋推荐 D16 · 黑方胜率 52.3% · 领先 1.0 目',
+    '黑方的推荐写清黑方'
+  );
+  eq(
+    adviceLine({ color: WHITE, move: 'Q16', winrate: 0.38, scoreLead: -1.02 }),
+    '白棋推荐 Q16 · 白方胜率 38.0% · 落后 1.0 目',
+    '白方的推荐写清白方，落后也直说'
+  );
+  eq(
+    adviceLine({ color: BLACK, move: 'pass', winrate: 0.502, scoreLead: 0.02 }),
+    '黑棋推荐 停一手 · 黑方胜率 50.2% · 形势两分',
+    '停一手与两分局面'
+  );
+  ok(isPassMove('pass') && isPassMove('tt') && isPassMove('PASS') && !isPassMove('D16'), '停一手的几种写法都认');
+  eq(leadText(0.02), '形势两分', '零点几目不说领先落后');
+  eq(adviceChip({ color: WHITE, move: 'Q16', winrate: 0.616, scoreLead: 3 }), '白棋推荐 Q16 62%', '状态条那一条短一些');
+}
+
+section('轮次：摆子局面能改，有手数就改不了');
+{
+  const setup = (ab: string[], aw: string[]): GameTree => {
+    let t = createTree(19, 7.5, 0, 'Chinese');
+    t = setProp(t, t.root, 'AB', ab.length ? ab : null);
+    t = setProp(t, t.root, 'AW', aw.length ? aw : null);
+    return t;
+  };
+
+  const t = setup(['dd', 'pp'], ['pd']);
+  eq(colorToPlayAt(t, t.root), BLACK, '没有手数时按惯例算黑先');
+  ok(canSetTurn(t, t.root).ok, '摆子的局面可以改轮次');
+  const w = setTurnAt(t, t.root, WHITE);
+  eq(colorToPlayAt(w, w.root), WHITE, '改完就轮到白方');
+  eq(positionKey(w, w.root), positionKey(t, t.root), '改轮次不动盘面');
+  ok(engineSgfFor(w, w.root, 'W').sgf.includes('PL[W]'), '送去引擎的局面也写着轮白，引擎不会再按惯例猜黑先');
+
+  // 61 是空点（60 已经被 AB[dd] 占了），落子必须落在空点上，指纹才会变
+  const moved = addMoveNode(t, t.root, BLACK, 61, { mainLine: true });
+  ok(!canSetTurn(moved.tree, moved.id).ok, '有手数以后不给改');
+  ok((canSetTurn(moved.tree, moved.id).reason ?? '').includes('手数'), '并且说明原因');
+  eq(colorToPlayAt(moved.tree, moved.id), WHITE, '有手数时轮次由手数定');
+
+  const ha = createTree(19, 7.5, 4, 'Chinese');
+  eq(colorToPlayAt(ha, ha.root), WHITE, '让子局面按惯例白先');
+  eq(colorToPlayAt(setTurnAt(ha, ha.root, BLACK), ha.root), BLACK, '写死 PL 之后听 PL 的');
+}
+
+section('推荐作废：盘面一变，旧提示不能再留着');
+{
+  const t = setProp(setProp(createTree(19, 7.5), 1, 'AB', ['dd']), 1, 'AW', ['pp']);
+  const key = positionKey(t, t.root);
+  eq(positionKey(setProp(t, t.root, 'C', ['随手写点注释']), t.root), key, '只改注释，指纹不变，提示还能留着');
+  eq(positionKey(setProp(t, t.root, 'TR', ['dd']), t.root), key, '只加标记也一样，盘面没变');
+  const moved = addMoveNode(t, t.root, BLACK, 61, { mainLine: true });
+  ok(positionKey(moved.tree, moved.id) !== key, '落子之后指纹变了，提示作废');
+  ok(positionKey(setProp(t, t.root, 'AW', ['pp', 'qq']), t.root) !== key, '加摆子也变了');
+  const withChild = addChild(t, t.root, { AB: ['jj'] });
+  ok(positionKey(withChild.tree, withChild.id) !== key, '摆子写到子节点里同样算变');
+  eq(positionAt(t, t.root).cells[60], BLACK, '顺带确认 dd 落在 60，坐标没再错位');
 }
 
 console.log(`\n界面逻辑自测：${passed} 项通过，${failed} 项失败`);

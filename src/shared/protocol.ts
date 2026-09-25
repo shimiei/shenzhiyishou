@@ -59,6 +59,7 @@ export type AppCommand =
   | 'pass'
   | 'resign'
   | 'hint'
+  | 'aiMove'
   | 'toggleAnalysis'
   | 'analyzeGame'
   | 'score'
@@ -163,7 +164,7 @@ export interface Api {
     analyzeStart(req: AnalyzeRequest): Promise<{ ok: boolean; error?: string }>;
     analyzeStop(): Promise<void>;
     benchmark(modelId: string, backend: BackendName): Promise<BenchmarkResult>;
-    hint(sgf: string, visits: number, color: 'B' | 'W'): Promise<GenMoveResult>;
+    hint(sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number): Promise<GenMoveResult>;
     onEvent(cb: (e: EngineEvent) => void): () => void;
   };
   models: {

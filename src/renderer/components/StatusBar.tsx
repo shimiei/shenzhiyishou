@@ -1,7 +1,7 @@
 import { useStore } from '../state/store';
-import { colorToPlayAt, moveNumberAt, propNum } from '../core/sgf/tree';
-import { positionAt } from '../core/sgf/tree';
-import { BLACK, PASS } from '../../shared/types';
+import { canSetTurn, colorToPlayAt, moveNumberAt, positionAt, propNum } from '../core/sgf/tree';
+import { adviceChip, colorName } from '../core/advice';
+import { BLACK } from '../../shared/types';
 
 export function StatusBar(): React.ReactElement {
   const tree = useStore((s) => s.tree);
@@ -11,6 +11,9 @@ export function StatusBar(): React.ReactElement {
   const thinking = useStore((s) => s.thinking);
   const finished = useStore((s) => s.finished);
   const game = useStore((s) => s.game);
+  const hint = useStore((s) => s.hint);
+  const setHint = useStore((s) => s.setHint);
+  const setTurn = useStore((s) => s.setTurn);
 
   const size = propNum(tree, tree.root, 'SZ', 19);
   const komi = propNum(tree, tree.root, 'KM', 7.5);
@@ -18,6 +21,8 @@ export function StatusBar(): React.ReactElement {
   const turn = colorToPlayAt(tree, current);
   const moveNo = moveNumberAt(tree, current);
   const pos = positionAt(tree, current);
+  // 摆子的局面没有手数，程序不知道轮到谁，得让用户说；有手数时轮次由手数定
+  const turnIsManual = canSetTurn(tree, current).ok;
 
   const modeText =
     game.mode === 'vs-ai'
@@ -26,16 +31,35 @@ export function StatusBar(): React.ReactElement {
         : '人机对局 · 你执白'
       : game.mode === 'ai-vs-ai'
         ? '机机对局'
-        : '自由摆谱';
+        : '辅助模式 · AI 不自己落子';
 
   return (
     <div className="statusbar">
       <span className="item">
         <span className="turn-pill">
           <span className={'stone-dot ' + (turn === BLACK ? 'black' : 'white')} />
-          {turn === BLACK ? '黑方行棋' : '白方行棋'}
+          {colorName(turn)}方行棋
         </span>
       </span>
+      {turnIsManual ? (
+        <span className="item">
+          <button
+            className="chip"
+            onClick={() => setTurn((3 - turn) as 1 | 2)}
+            title="这一局还没有手数，程序按惯例猜的黑先。点一下改成对方先走。"
+          >
+            换先手
+          </button>
+        </span>
+      ) : null}
+      {hint ? (
+        <span className="item">
+          <button className="chip active" onClick={() => setHint(null)} title="给现在轮到这一方的一手推荐，点一下清掉；按 H 重新算">
+            <span className={'stone-dot ' + (hint.color === BLACK ? 'black' : 'white')} />
+            {adviceChip(hint)}
+          </button>
+        </span>
+      ) : null}
       <span className="item">
         第 <b>{moveNo}</b> 手
       </span>
@@ -66,7 +90,6 @@ export function StatusBar(): React.ReactElement {
       <span className="item faint">
         <span className="kbd">?</span> 快捷键
       </span>
-      <span className="item faint">{PASS === -1 ? '' : ''}</span>
     </div>
   );
 }

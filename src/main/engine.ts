@@ -321,7 +321,13 @@ export class EngineManager {
     await this.playEngine
       .send(`kata-set-param maxVisits ${Math.max(1, Math.round(req.maxVisits))}`, 15000)
       .catch(() => undefined);
-    await this.playEngine.send(`kata-set-param maxTime ${Math.max(0, req.maxTimeMs) / 1000}`, 15000).catch(() => undefined);
+    /*
+     * maxTime 0 在 KataGo 里不是"不限时"，是"立刻停"：实测只出 1 次访问的结论，
+     * 胜率目差全是第一个访问的外推值（空盘能报出 99% 和 14 目）。所以不设时限时
+     * 写一个足够大的数，同时把上一手留下的时限冲掉；这个参数是留在引擎状态里的。
+     */
+    const maxTimeSec = req.maxTimeMs > 0 ? req.maxTimeMs / 1000 : 1e9;
+    await this.playEngine.send(`kata-set-param maxTime ${maxTimeSec}`, 15000).catch(() => undefined);
     await this.playEngine
       .send(`kata-set-param chosenMoveTemperature ${Math.max(0, req.temperature)}`, 15000)
       .catch(() => undefined);
@@ -399,6 +405,14 @@ export class EngineManager {
         resigned: false,
         error: e instanceof Error ? e.message : String(e)
       };
+    } finally {
+      /*
+       * kata-genmove_analyze 会把这一手真的落到引擎自己的那盘棋上，所以缓存的同步标记
+       * 到这里就不作数了。同一个局面再问一次（连按两下提示、提示完又让它走一手）必须
+       * 重新 loadsgf，否则第二次是在"引擎自己多走了一手"的局面上算出来的，
+       * 报出来的胜率目差会离谱到十几目。
+       */
+      this.synced.delete(this.playEngine);
     }
   }
 
@@ -524,8 +538,12 @@ export class EngineManager {
     this.analysis = null;
   }
 
-  async hint(sgf: string, visits: number, color: 'B' | 'W'): Promise<GenMoveResult> {
-    return this.genMove({ sgf, color, maxVisits: visits, maxTimeMs: 0, allowResign: false, temperature: 0 });
+  /**
+   * 提示一手。跟对局落子走同一套参数，访客量按分析档，但照样带时限：
+   * 大网络上一手提示跑几十秒会让人以为卡住，到点就交现有结论。
+   */
+  async hint(sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number): Promise<GenMoveResult> {
+    return this.genMove({ sgf, color, maxVisits: visits, maxTimeMs, allowResign: false, temperature: 0 });
   }
 
   async benchmark(modelId: string, backend: BackendName): Promise<BenchmarkResult> {
