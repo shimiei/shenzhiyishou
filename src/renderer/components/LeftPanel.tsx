@@ -11,7 +11,7 @@ function vertexOf(point: number, size: number): string {
 
 type Tab = 'tree' | 'moves' | 'comment';
 
-export function LeftPanel(): React.ReactElement {
+export function LeftPanel({ style }: { style?: React.CSSProperties }): React.ReactElement {
   const tree = useStore((s) => s.tree);
   const current = useStore((s) => s.current);
   const goto = useStore((s) => s.goto);
@@ -48,7 +48,7 @@ export function LeftPanel(): React.ReactElement {
   const currentMove = moveAtSized(tree, current);
 
   return (
-    <div className="side left">
+    <div className="side left" style={style}>
       <div className="panel grow" style={{ borderBottom: 'none' }}>
         <div className="panel-head">
           <div className="seg">

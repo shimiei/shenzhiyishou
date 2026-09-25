@@ -17,7 +17,9 @@
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder --win --x64",
     "test:rules": "node tools/rules-selftest.mjs",
-    "test:window": "node tools/window-state-selftest.mjs"
+    "test:window": "node tools/window-state-selftest.mjs",
+    "test:ui": "node tools/ui-logic-selftest.mjs",
+    "test": "npm run test:rules && npm run test:window && npm run test:ui"
   },
   "dependencies": {},
   "devDependencies": {

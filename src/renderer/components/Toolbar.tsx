@@ -1,4 +1,4 @@
-import { useStore } from '../state/store';
+import { activeWebContentsId, useStore } from '../state/store';
 import { serializeSgf } from '../core/sgf/serialize';
 import { infoFromTree } from '../core/sgf/tree';
 
@@ -45,13 +45,13 @@ export function Toolbar(): React.ReactElement {
   };
 
   const capture = async (): Promise<void> => {
-    const pane = document.querySelector('webview') as (HTMLElement & { getWebContentsId?: () => number }) | null;
-    if (!pane || !pane.getWebContentsId) {
+    // 认当前标签，不是第一个 webview：浏览器栏里可能开着好几张页面
+    const id = activeWebContentsId();
+    if (id === null) {
       setBrowserOpen(true);
       toast('请先在右侧内置浏览器里打开网页，再点截取', 'info');
       return;
     }
-    const id = pane.getWebContentsId();
     const dataUrl = await window.api.browser.capture(id);
     if (!dataUrl) {
       toast('截取失败，请确认内置浏览器已经加载了页面', 'error');

@@ -35,6 +35,7 @@ export const CH = {
 
   browserCapture: 'browser:capture',
   browserOpenExternal: 'browser:openExternal',
+  browserOpenTab: 'browser:openTab',
 
   clipReadText: 'clip:readText',
   clipWriteText: 'clip:writeText',
@@ -66,7 +67,17 @@ export type AppCommand =
   | 'models'
   | 'library'
   | 'toggleBrowser'
+  | 'browserNewTab'
+  | 'browserCloseTab'
+  | 'browserNextTab'
+  | 'browserPrevTab'
   | 'about';
+
+/** 网页点了新标签链接时，主进程把地址交回界面开成标签。 */
+export interface OpenTabRequest {
+  url: string;
+  activate: boolean;
+}
 
 export interface EngineEvent {
   type: 'status' | 'info' | 'log' | 'move' | 'error' | 'genmove-done';
@@ -183,6 +194,7 @@ export interface Api {
   browser: {
     capture(webContentsId: number): Promise<string | null>;
     openExternal(url: string): Promise<void>;
+    onOpenTab(cb: (req: OpenTabRequest) => void): () => void;
   };
   clip: {
     readText(): Promise<string>;

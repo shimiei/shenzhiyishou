@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import { CH, type AnalyzeRequest, type Api, type AppCommand, type DownloadProgress, type EngineEvent, type GenMoveRequest } from './shared/protocol';
+import { CH, type AnalyzeRequest, type Api, type AppCommand, type DownloadProgress, type EngineEvent, type GenMoveRequest, type OpenTabRequest } from './shared/protocol';
 import type { AppSettings, BackendName, RecordMeta } from './shared/types';
 
 function on<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -49,7 +49,8 @@ const api: Api = {
   },
   browser: {
     capture: (webContentsId: number) => ipcRenderer.invoke(CH.browserCapture, webContentsId),
-    openExternal: (url: string) => ipcRenderer.invoke(CH.browserOpenExternal, url)
+    openExternal: (url: string) => ipcRenderer.invoke(CH.browserOpenExternal, url),
+    onOpenTab: (cb: (req: OpenTabRequest) => void) => on<OpenTabRequest>(CH.browserOpenTab, cb)
   },
   clip: {
     readText: () => ipcRenderer.invoke(CH.clipReadText),

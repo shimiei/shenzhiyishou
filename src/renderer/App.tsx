@@ -1,17 +1,34 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { useStore } from './state/store';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useStore, activeWebContentsId } from './state/store';
 import { TitleBar } from './components/TitleBar';
 import { Toolbar } from './components/Toolbar';
 import { LeftPanel } from './components/LeftPanel';
 import { EnginePanel } from './components/EnginePanel';
 import { StatusBar } from './components/StatusBar';
 import { BrowserPanel } from './components/BrowserPanel';
+import { DragHandle } from './components/DragHandle';
 import { ImageImportDialog } from './components/ImageImport';
 import { DialogsHost } from './components/Dialogs';
 import { Board, type Candidate } from './components/Board';
 import { useShortcuts } from './hooks/useShortcuts';
 import { infoFromTree, marksAt, moveAtSized, moveNumberAt, pathTo, positionAt, propNum } from './core/sgf/tree';
 import { serializeSgf } from './core/sgf/serialize';
+import {
+  DEFAULT_LEFT,
+  DEFAULT_RIGHT,
+  DEFAULT_SPLIT,
+  LEFT_MAX,
+  LEFT_MIN,
+  MIN_BOARD_PX,
+  MIN_BROWSER_PX,
+  RIGHT_MAX,
+  RIGHT_MIN,
+  SPLITTER_PX,
+  fitPanelWidth,
+  fitSplit,
+  percentHint,
+  pxHint
+} from './core/layout/panes';
 import { BLACK } from '../shared/types';
 
 export function App(): React.ReactElement {
@@ -23,7 +40,13 @@ export function App(): React.ReactElement {
   const snapshot = useStore((s) => s.analysis);
   const browserOpen = useStore((s) => s.browserOpen);
   const splitRatio = useStore((s) => s.splitRatio);
+  const leftWidth = useStore((s) => s.leftWidth);
+  const rightWidth = useStore((s) => s.rightWidth);
   const setSplit = useStore((s) => s.setSplit);
+  const setLeftWidth = useStore((s) => s.setLeftWidth);
+  const setRightWidth = useStore((s) => s.setRightWidth);
+  const [wsWidth, setWsWidth] = useState(0);
+  const dragStart = useRef({ left: DEFAULT_LEFT, right: DEFAULT_RIGHT, split: DEFAULT_SPLIT });
   const settings = useStore((s) => s.settings);
   const zoom = useStore((s) => s.zoom);
   const showOwnership = useStore((s) => s.showOwnership);
@@ -44,7 +67,22 @@ export function App(): React.ReactElement {
     void boot();
   }, [boot]);
 
-  // 引擎事件
+  // 侧栏能占多宽要看工作区现在多宽，窗口一改就得重新算，所以量着走
+  useEffect(() => {
+    const el = wsRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setWsWidth(el.clientWidth));
+    ro.observe(el);
+    setWsWidth(el.clientWidth);
+    return () => ro.disconnect();
+  }, [ready]);
+
+  // 网页里点了新标签的链接（主进程拦下来转过来的），在分屏里开成标签
+  useEffect(() => {
+    return window.api.browser.onOpenTab((req) => {
+      useStore.getState().openBrowserTab(req.url, req.activate);
+    });
+  }, []);  // 引擎事件
   useEffect(() => {
     const off = window.api.engine.onEvent((e) => {
       const st = useStore.getState();
@@ -116,13 +154,13 @@ export function App(): React.ReactElement {
           break;
         case 'captureBrowser':
           void (async () => {
-            const pane = document.querySelector('webview') as (HTMLElement & { getWebContentsId?: () => number }) | null;
-            if (!pane?.getWebContentsId) {
+            const id = activeWebContentsId();
+            if (id === null) {
               s.setBrowserOpen(true);
               s.toast('请先在内置浏览器里打开网页', 'info');
               return;
             }
-            const dataUrl = await window.api.browser.capture(pane.getWebContentsId());
+            const dataUrl = await window.api.browser.capture(id);
             if (dataUrl) s.openImage({ dataUrl, name: '内置浏览器截取' });
             else s.toast('截取失败', 'error');
           })();
@@ -179,6 +217,23 @@ export function App(): React.ReactElement {
         case 'toggleBrowser':
           s.setBrowserOpen(!s.browserOpen);
           break;
+        case 'browserNewTab':
+          // 分屏关着或者一个标签都没有时，setBrowserOpen 自己会补一个空白标签，
+          // 这时候再新建就多出一张空白页了
+          if (!s.browserOpen || s.tabs.length === 0) s.setBrowserOpen(true);
+          else s.openBrowserTab('about:blank');
+          break;
+        case 'browserCloseTab': {
+          const id = s.activeTabId ?? s.tabs[0]?.id;
+          if (id) s.closeBrowserTab(id);
+          break;
+        }
+        case 'browserNextTab':
+          s.stepBrowserTab(1);
+          break;
+        case 'browserPrevTab':
+          s.stepBrowserTab(-1);
+          break;
         case 'about':
           s.setDialog('about');
           break;
@@ -220,21 +275,47 @@ export function App(): React.ReactElement {
     }));
   }, [snapshot]);
 
-  const onSplitterDown = (e: React.PointerEvent): void => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startRatio = splitRatio;
-    const total = wsRef.current?.clientWidth ?? 1000;
-    const move = (ev: PointerEvent): void => {
-      setSplit(startRatio + (ev.clientX - startX) / total);
-    };
-    const up = (): void => {
-      document.removeEventListener('pointermove', move);
-      document.removeEventListener('pointerup', up);
-    };
-    document.addEventListener('pointermove', move);
-    document.addEventListener('pointerup', up);
+  // 侧栏按用户拖出来的宽度显示，但必须先给中间那块留够地方：
+  // 窗口拖窄的时候光靠 CSS 的 min-width 会把棋盘挤成一条缝，这里连上限一起算出来。
+  // 中间那块要留多少跟分屏有关：浏览器开着的时候棋盘和浏览器都得有地方站。
+  const panes = useMemo(() => {
+    const total = wsWidth || 1500;
+    const mid = browserOpen ? MIN_BOARD_PX + SPLITTER_PX + MIN_BROWSER_PX : MIN_BOARD_PX;
+    const left = fitPanelWidth(leftWidth, LEFT_MIN, LEFT_MAX, total, RIGHT_MIN + SPLITTER_PX + mid);
+    const right = fitPanelWidth(rightWidth, RIGHT_MIN, RIGHT_MAX, total, left + SPLITTER_PX + mid);
+    const mainWidth = Math.max(total - left - right - 2 * SPLITTER_PX, 0);
+    return { left, right, mainWidth, mid };
+  }, [leftWidth, rightWidth, wsWidth, browserOpen]);
+
+  const split = browserOpen ? fitSplit(splitRatio, panes.mainWidth) : DEFAULT_SPLIT;
+
+  /** 拖动时只改"用户意图值"：按当前窗口夹一遍再存，免得存进去一个非法的宽度。 */
+  const dragLeft = (dx: number): void => {
+    const total = wsRef.current?.clientWidth ?? 1500;
+    setLeftWidth(
+      fitPanelWidth(dragStart.current.left + dx, LEFT_MIN, LEFT_MAX, total, RIGHT_MIN + SPLITTER_PX + panes.mid)
+    );
   };
+  const dragRight = (dx: number): void => {
+    const total = wsRef.current?.clientWidth ?? 1500;
+    // 右栏在右边，往右拖是把它拖窄
+    setRightWidth(
+      fitPanelWidth(dragStart.current.right - dx, RIGHT_MIN, RIGHT_MAX, total, panes.left + SPLITTER_PX + panes.mid)
+    );
+  };
+  const dragSplit = (dx: number): void => {
+    const usable = Math.max(panes.mainWidth - SPLITTER_PX, 1);
+    setSplit(fitSplit(dragStart.current.split + dx / usable, panes.mainWidth));
+  };
+
+  // 提示显示的是"实际会显示成多宽"，跟渲染用的是同一套夹取，
+  // 窗口不够宽时不会谎报一个显示不出来的数字
+  const liveWidth = (): number => wsRef.current?.clientWidth ?? 1500;
+  const leftHint = (): string =>
+    pxHint(fitPanelWidth(useStore.getState().leftWidth, LEFT_MIN, LEFT_MAX, liveWidth(), RIGHT_MIN + SPLITTER_PX + panes.mid));
+  const rightHint = (): string =>
+    pxHint(fitPanelWidth(useStore.getState().rightWidth, RIGHT_MIN, RIGHT_MAX, liveWidth(), panes.left + SPLITTER_PX + panes.mid));
+  const splitHint = (): string => percentHint(fitSplit(useStore.getState().splitRatio, panes.mainWidth));
 
   if (!ready) {
     return (
@@ -258,12 +339,23 @@ export function App(): React.ReactElement {
       <TitleBar />
       <Toolbar />
       <div className="workspace" ref={wsRef}>
-        <LeftPanel />
+        <LeftPanel style={{ width: panes.left, minWidth: panes.left }} />
+        <DragHandle
+          title="拖动调整左栏宽度，双击复位"
+          onStart={() => {
+            // 从"看得见的宽度"起步，不是从存盘的那个数：窗口窄的时候两者不一样，
+            // 否则会先拖过一段什么都不动的距离，手感发黏
+            dragStart.current.left = panes.left;
+          }}
+          onMove={(dx) => dragLeft(dx)}
+          hint={leftHint}
+          onReset={() => setLeftWidth(DEFAULT_LEFT)}
+        />
         <div className="main-col">
           <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0 }}>
             <div
               style={{
-                flex: browserOpen ? `${splitRatio} 1 0%` : '1 1 auto',
+                flex: browserOpen ? `${split} 1 0%` : '1 1 auto',
                 display: 'flex',
                 flexDirection: 'column',
                 minWidth: 0,
@@ -313,15 +405,35 @@ export function App(): React.ReactElement {
             </div>
             {browserOpen ? (
               <>
-                <div className="splitter" onPointerDown={onSplitterDown} title="拖动调整分屏比例" />
-                <div style={{ flex: `${1 - splitRatio} 1 0%`, display: 'flex', minWidth: 0 }}>
+                <DragHandle
+                  title="拖动调整棋盘与浏览器的比例，双击复位"
+                  onStart={() => {
+                    // 从"看得见的宽度"起步，不是从存盘的那个数：窗口窄的时候两者不一样，
+                    // 否则会先拖过一段什么都不动的距离，手感发黏
+                    dragStart.current.split = split;
+                  }}
+                  onMove={(dx) => dragSplit(dx)}
+                  hint={splitHint}
+                  onReset={() => setSplit(DEFAULT_SPLIT)}
+                />
+                <div style={{ flex: `${1 - split} 1 0%`, display: 'flex', minWidth: 0 }}>
                   <BrowserPanel />
                 </div>
               </>
             ) : null}
           </div>
         </div>
+        <DragHandle
+          title="拖动调整右栏宽度，双击复位"
+          onStart={() => {
+            dragStart.current.right = panes.right;
+          }}
+          onMove={(dx) => dragRight(dx)}
+          hint={rightHint}
+          onReset={() => setRightWidth(DEFAULT_RIGHT)}
+        />
         <EnginePanel
+          style={{ width: panes.right, minWidth: panes.right }}
           snapshot={snapshot}
           showOwnership={showOwnership}
           onShowOwnership={setShowOwnership}

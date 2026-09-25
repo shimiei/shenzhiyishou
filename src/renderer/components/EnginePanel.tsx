@@ -14,9 +14,10 @@ export interface EnginePanelProps {
   onShowOwnership: (v: boolean) => void;
   showOwnership: boolean;
   onPickCandidate: (move: string) => void;
+  style?: React.CSSProperties;
 }
 
-export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCandidate }: EnginePanelProps): React.ReactElement {
+export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCandidate, style }: EnginePanelProps): React.ReactElement {
   const engine = useStore((s) => s.engineStatus);
   const analyzing = useStore((s) => s.analyzing);
   const thinking = useStore((s) => s.thinking);
@@ -52,7 +53,7 @@ export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCa
   };
 
   return (
-    <div className="side right">
+    <div className="side right" style={style}>
       <div className="panel">
         <div className="panel-head">
           <span className="title">引擎</span>

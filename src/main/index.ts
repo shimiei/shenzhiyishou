@@ -200,6 +200,27 @@ function createWindow(): void {
     delete (webPreferences as Record<string, unknown>).preload;
   });
 
+  // 网页里的 target=_blank / window.open 以前会另开一个 Electron 窗口，
+  // 那个窗口不在我们手里，截取也就无从谈起。现在一律拒掉，把地址发回界面开成新标签。
+  win.webContents.on('did-attach-webview', (_e, guest) => {
+    guest.setWindowOpenHandler(({ url, disposition }) => {
+      if (url && url !== 'about:blank') {
+        send(CH.browserOpenTab, { url, activate: disposition !== 'background-tab' });
+      }
+      return { action: 'deny' };
+    });
+    /*
+     * 只有 Ctrl+W 在这儿接，别的标签快捷键交给主菜单的加速键（焦点在网页里也照样触发）。
+     * 分开处理是有原因的：实测 Ctrl+W 的加速键在 Windows 上根本不触发（Ctrl+T、Ctrl+Tab 都正常），
+     * 而 iframe 之外的按键又不会冒泡到界面，所以网页里的 Ctrl+W 只能在这一层拦。
+     * 别顺手把 Ctrl+T 也搬到这儿：加速键和这里会各响应一次，一次按键开出两个标签。
+     */
+    guest.on('before-input-event', (_ev, input) => {
+      if (input.type !== 'keyDown' || !input.control || input.shift || input.alt || input.meta) return;
+      if (input.key.toLowerCase() === 'w') send(CH.appCommand, 'browserCloseTab' satisfies AppCommand);
+    });
+  });
+
   if (process.env.NODE_ENV === 'development' && process.env.VITE_DEV_SERVER_URL) {
     void win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else if (process.env.NODE_ENV === 'development') {
@@ -246,6 +267,11 @@ function buildMenu(): void {
       label: '视图',
       submenu: [
         { label: '显示 / 隐藏内置浏览器', accelerator: 'CmdOrCtrl+B', click: cmd('toggleBrowser') },
+        // 焦点在网页里的时候键盘事件不冒泡到界面，标签页那几条键得靠加速键送进来
+        { label: '新建标签页', accelerator: 'CmdOrCtrl+T', click: cmd('browserNewTab') },
+        { label: '关闭标签页', accelerator: 'CmdOrCtrl+Shift+W', click: cmd('browserCloseTab') },
+        { label: '下一个标签页', accelerator: 'CmdOrCtrl+Tab', click: cmd('browserNextTab') },
+        { label: '上一个标签页', accelerator: 'CmdOrCtrl+Shift+Tab', click: cmd('browserPrevTab') },
         { type: 'separator' },
         { role: 'resetZoom', label: '实际大小' },
         { role: 'zoomIn', label: '放大' },

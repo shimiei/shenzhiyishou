@@ -15,13 +15,14 @@ export function loadSettings(): SettingsStore {
   } catch {
     data = {};
   }
-  // vision 和 window 是嵌套对象，只展开外层会把整个子对象顶掉，
+  // vision、window、layout 是嵌套对象，只展开外层会把整个子对象顶掉，
   // 于是老版本留下的 settings.json 少一个字段，界面就会拿到 undefined。
   cached = {
     ...DEFAULT_SETTINGS,
     ...data,
     vision: { ...DEFAULT_SETTINGS.vision, ...(data.vision ?? {}) },
-    window: { ...DEFAULT_SETTINGS.window, ...(data.window ?? {}) }
+    window: { ...DEFAULT_SETTINGS.window, ...(data.window ?? {}) },
+    layout: { ...DEFAULT_SETTINGS.layout, ...(data.layout ?? {}) }
   };
   return cached;
 }
@@ -32,7 +33,8 @@ export function saveSettings(patch: Partial<SettingsStore>): SettingsStore {
     ...cur,
     ...patch,
     vision: { ...cur.vision, ...(patch.vision ?? {}) },
-    window: { ...cur.window, ...(patch.window ?? {}) }
+    window: { ...cur.window, ...(patch.window ?? {}) },
+    layout: { ...cur.layout, ...(patch.layout ?? {}) }
   };
   cached = next;
   mkdirSync(path.dirname(settingsFile()), { recursive: true });

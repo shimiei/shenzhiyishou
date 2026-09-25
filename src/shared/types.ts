@@ -134,6 +134,14 @@ export interface AppSettings {
     height: number;
     maximized: boolean;
   };
+  /** 分栏尺寸。用户拖过分隔条就按用户的值来，没拖过时的默认值见 core/layout/panes.ts。 */
+  layout: {
+    leftWidth: number;
+    rightWidth: number;
+    /** 棋盘占中间那块的宽度比例，0.25 到 0.75。 */
+    splitRatio: number;
+    browserOpen: boolean;
+  };
   vision: {
     enabled: boolean;
     endpoint: string;
@@ -161,6 +169,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
     width: 1500,
     height: 950,
     maximized: false
+  },
+  layout: {
+    leftWidth: 248,
+    rightWidth: 316,
+    splitRatio: 0.5,
+    browserOpen: false
   },
   vision: {
     enabled: false,

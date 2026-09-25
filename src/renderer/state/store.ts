@@ -33,6 +33,18 @@ import {
 import { serializeMainLineTo, cloneTree } from '../core/sgf/serialize';
 import { parseSgf } from '../core/sgf/parse';
 import { Position } from '../core/go/position';
+import { closeTab, makeTab, openTab, stepTab, type BrowserTab } from '../core/browser/tabs';
+import {
+  DEFAULT_LEFT,
+  DEFAULT_RIGHT,
+  DEFAULT_SPLIT,
+  LEFT_MAX,
+  LEFT_MIN,
+  RIGHT_MAX,
+  RIGHT_MIN,
+  SPLIT_MAX,
+  SPLIT_MIN
+} from '../core/layout/panes';
 
 export type Tool = 'play' | 'black' | 'white' | 'erase' | 'triangle' | 'square' | 'circle' | 'cross' | 'label';
 export type DialogName =
@@ -96,6 +108,12 @@ interface AppStore {
   image: { dataUrl: string; name: string } | null;
   browserOpen: boolean;
   splitRatio: number;
+  /** 左右两栏的像素宽度，拖动分隔条时改。 */
+  leftWidth: number;
+  rightWidth: number;
+  /** 内置浏览器的标签页，一个标签一份 webview。 */
+  tabs: BrowserTab[];
+  activeTabId: string | null;
   zoom: number;
   toasts: Toast[];
 
@@ -149,6 +167,13 @@ interface AppStore {
   openImage: (img: { dataUrl: string; name: string } | null) => void;
   setBrowserOpen: (v: boolean) => void;
   setSplit: (v: number) => void;
+  setLeftWidth: (v: number) => void;
+  setRightWidth: (v: number) => void;
+  openBrowserTab: (url: string, activate?: boolean) => string;
+  closeBrowserTab: (id: string) => void;
+  activateTab: (id: string) => void;
+  stepBrowserTab: (dir: 1 | -1) => void;
+  updateTab: (id: string, patch: Partial<Pick<BrowserTab, 'url' | 'title'>>) => void;
   setZoom: (v: number) => void;
   setDeadStones: (v: number[]) => void;
   setFinished: (v: string | null) => void;
@@ -168,6 +193,35 @@ const emptyStatus: EngineStatus = {
 
 function sgfFor(tree: GameTree, node: number): string {
   return serializeMainLineTo(tree, node);
+}
+
+function clampRange(v: number, lo: number, hi: number): number {
+  if (!Number.isFinite(v)) return lo;
+  return Math.max(lo, Math.min(hi, v));
+}
+
+/**
+ * 拖分隔条时每一帧都写盘太凶，攒一会儿再写。
+ * 只存布局这几项，别的字段交给主进程合并，免得把窗口位置之类的覆盖掉。
+ */
+let layoutTimer: ReturnType<typeof setTimeout> | null = null;
+function persistLayout(s: {
+  leftWidth: number;
+  rightWidth: number;
+  splitRatio: number;
+  browserOpen: boolean;
+}): void {
+  const layout: AppSettings['layout'] = {
+    leftWidth: Math.round(s.leftWidth),
+    rightWidth: Math.round(s.rightWidth),
+    splitRatio: s.splitRatio,
+    browserOpen: s.browserOpen
+  };
+  if (layoutTimer) clearTimeout(layoutTimer);
+  layoutTimer = setTimeout(() => {
+    layoutTimer = null;
+    void window.api.settings.set({ layout });
+  }, 400);
 }
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -201,7 +255,11 @@ export const useStore = create<AppStore>((set, get) => ({
   dialog: null,
   image: null,
   browserOpen: false,
-  splitRatio: 0.5,
+  splitRatio: DEFAULT_SPLIT,
+  leftWidth: DEFAULT_LEFT,
+  rightWidth: DEFAULT_RIGHT,
+  tabs: [],
+  activeTabId: null,
   zoom: 1,
   showOwnership: false,
   toasts: [],
@@ -216,15 +274,27 @@ export const useStore = create<AppStore>((set, get) => ({
           : 'light'
         : settings.theme;
     document.documentElement.dataset.theme = theme;
+    const layout = settings.layout ?? DEFAULT_SETTINGS.layout;
     set({
       settings,
       info,
       theme,
       ready: true,
+      leftWidth: clampRange(layout.leftWidth, LEFT_MIN, LEFT_MAX),
+      rightWidth: clampRange(layout.rightWidth, RIGHT_MIN, RIGHT_MAX),
+      splitRatio: clampRange(layout.splitRatio, SPLIT_MIN, SPLIT_MAX),
+      browserOpen: layout.browserOpen,
+      // 重启后浏览器留一个空白标签，用户直接就能输地址，不用先点新建
+      tabs: layout.browserOpen ? [makeTab('about:blank')] : [],
+      activeTabId: null,
       // 界面刷新时引擎可能还在跑，状态要以主进程为准，别显示成没启动
       engineStatus: st ?? get().engineStatus,
       game: { ...get().game, visits: settings.playVisits, timeMs: settings.playTimeMs }
     });
+    if (layout.browserOpen) {
+      const first = get().tabs[0];
+      if (first) set({ activeTabId: first.id });
+    }
     // 开机就把引擎拉起来，不等到用户点了"让引擎落一手"才在背后偷偷启动：
     // 首次运行要针对显卡做 OpenCL 调优，可能十几分钟，这段等待必须看得见
     //（面板上显示启动中，引擎日志里滚出调优进度）。已经跑着就别重复启动。
@@ -808,10 +878,51 @@ export const useStore = create<AppStore>((set, get) => ({
 
   setBrowserOpen(v) {
     set({ browserOpen: v });
+    // 第一次打开时先把标签建起来，否则浏览器栏是空的，用户还得再点一次新建
+    if (v && get().tabs.length === 0) set(openTab(get().tabs, makeTab('about:blank'), get().activeTabId));
+    persistLayout(get());
   },
 
   setSplit(v) {
-    set({ splitRatio: Math.max(0.25, Math.min(0.75, v)) });
+    set({ splitRatio: clampRange(v, SPLIT_MIN, SPLIT_MAX) });
+    persistLayout(get());
+  },
+
+  setLeftWidth(v) {
+    set({ leftWidth: clampRange(Math.round(v), LEFT_MIN, LEFT_MAX) });
+    persistLayout(get());
+  },
+
+  setRightWidth(v) {
+    set({ rightWidth: clampRange(Math.round(v), RIGHT_MIN, RIGHT_MAX) });
+    persistLayout(get());
+  },
+
+  openBrowserTab(url, activate = true) {
+    const tab = makeTab(url);
+    const next = openTab(get().tabs, tab, get().activeTabId, activate);
+    set({ tabs: next.tabs, activeTabId: next.activeId, browserOpen: true });
+    persistLayout(get());
+    return tab.id;
+  },
+
+  closeBrowserTab(id) {
+    const next = closeTab(get().tabs, id, get().activeTabId);
+    set({ tabs: next.tabs, activeTabId: next.activeId });
+    persistLayout(get());
+  },
+
+  activateTab(id) {
+    if (!get().tabs.some((t) => t.id === id)) return;
+    set({ activeTabId: id });
+  },
+
+  stepBrowserTab(dir) {
+    set({ activeTabId: stepTab(get().tabs, get().activeTabId, dir) });
+  },
+
+  updateTab(id, patch) {
+    set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, ...patch } : t)) });
   },
 
   setZoom(v) {
@@ -863,4 +974,34 @@ export function currentMainLineSgf(): string {
 
 export function cloneCurrentTree(): GameTree {
   return cloneTree(useStore.getState().tree);
+}
+
+/**
+ * 标签页对应的 webview 节点。浏览器面板每建一个标签注册一份，
+ * 截取的时候要按当前标签去找，不能像以前那样 querySelector 抓到第一个。
+ */
+const webviews = new Map<string, HTMLElement>();
+
+export function registerWebview(tabId: string, el: HTMLElement | null): void {
+  if (el) webviews.set(tabId, el);
+  else webviews.delete(tabId);
+}
+
+/** 从 webview 节点问出它的 webContentsId，节点已经摘掉或者还没挂载时返回 null。 */
+export function webContentsIdOf(el: Element | null | undefined): number | null {
+  const wv = el as (HTMLElement & { getWebContentsId?: () => number }) | null | undefined;
+  if (!wv?.getWebContentsId || !wv.isConnected) return null;
+  try {
+    const id = wv.getWebContentsId();
+    return typeof id === 'number' && id > 0 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 当前标签的 webContentsId。一个标签都没有时返回 null。 */
+export function activeWebContentsId(): number | null {
+  const { tabs, activeTabId } = useStore.getState();
+  const id = activeTabId && tabs.some((t) => t.id === activeTabId) ? activeTabId : tabs[0]?.id;
+  return id ? webContentsIdOf(webviews.get(id)) : null;
 }
