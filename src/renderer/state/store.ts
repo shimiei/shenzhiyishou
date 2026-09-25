@@ -613,6 +613,12 @@ export const useStore = create<AppStore>((set, get) => ({
       get().toast('引擎出错：' + (e instanceof Error ? e.message : String(e)), 'error');
     } finally {
       get().setThinking(false);
+      /*
+       * 引擎算这一手之前会把实时分析停掉，给搜索腾机器（这一步是 genMove 里做的）。
+       * 提示不落子，没人触发界面里那条"局面变了就重连分析"，所以要在这里把它接回去：
+       * 不接的话面板还写着"分析中"，候选点却停在上一手那几个上，看的人会以为分析坏了。
+       */
+      if (get().analyzing) void get().startAnalysis(true);
     }
   },
 
