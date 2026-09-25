@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "sourceMap": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  // 这里不含 src/preload.ts：预加载脚本必须由 esbuild 打成单文件，
+  // 沙箱里 require 不了相对模块。若让 tsc 也输出 dist/preload.js，两边会互相覆盖，
+  // 覆盖的结果就是界面打不开。preload 的类型检查交给 tsconfig.preload.json。
+  "include": ["src/main/**/*.ts", "src/shared/**/*.ts"]
+}

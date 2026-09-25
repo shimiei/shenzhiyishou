@@ -1,0 +1,866 @@
+import { create } from 'zustand';
+import {
+  BLACK,
+  DEFAULT_SETTINGS,
+  PASS,
+  WHITE,
+  type AnalysisSnapshot,
+  type AppSettings,
+  type EngineStatus,
+  type GameInfo,
+  type GameTree,
+  type Stone
+} from '../../shared/types';
+import type { AppInfo } from '../../shared/protocol';
+import {
+  addChild,
+  addMoveNode,
+  colorToPlayAt,
+  createTree,
+  deleteSubtree,
+  infoFromTree,
+  makeMainLine,
+  marksAt,
+  moveAtSized,
+  moveNumberAt,
+  pathTo,
+  positionAt,
+  propNum,
+  setProp,
+  type Mark,
+  type MarkType
+} from '../core/sgf/tree';
+import { serializeMainLineTo, cloneTree } from '../core/sgf/serialize';
+import { parseSgf } from '../core/sgf/parse';
+import { Position } from '../core/go/position';
+
+export type Tool = 'play' | 'black' | 'white' | 'erase' | 'triangle' | 'square' | 'circle' | 'cross' | 'label';
+export type DialogName =
+  | 'settings'
+  | 'about'
+  | 'models'
+  | 'library'
+  | 'score'
+  | 'image'
+  | 'gameinfo'
+  | 'shortcuts'
+  | 'newgame'
+  | null;
+
+export interface GameConfig {
+  mode: 'manual' | 'vs-ai' | 'ai-vs-ai';
+  humanColor: Stone;
+  visits: number;
+  timeMs: number;
+  temperature: number;
+  allowResign: boolean;
+}
+
+export interface Toast {
+  text: string;
+  kind: 'info' | 'error' | 'success';
+  id: number;
+}
+
+interface AppStore {
+  ready: boolean;
+  settings: AppSettings;
+  info: AppInfo | null;
+  theme: 'dark' | 'light';
+
+  tree: GameTree;
+  current: number;
+  past: GameTree[];
+  future: GameTree[];
+  filePath: string | null;
+  dirty: boolean;
+
+  tool: Tool;
+  hover: number | null;
+  cursor: number | null;
+  /** 是否在棋盘上铺形势判断的热力块，默认关，免得挡住棋子。 */
+  showOwnership: boolean;
+
+  engineStatus: EngineStatus;
+  analysis: AnalysisSnapshot | null;
+  analyzing: boolean;
+  thinking: boolean;
+  hintMove: string | null;
+  engineLogs: string[];
+
+  game: GameConfig;
+  finished: string | null;
+  deadStones: number[];
+
+  dialog: DialogName;
+  image: { dataUrl: string; name: string } | null;
+  browserOpen: boolean;
+  splitRatio: number;
+  zoom: number;
+  toasts: Toast[];
+
+  // 动作
+  boot: () => Promise<void>;
+  setSettings: (patch: Partial<AppSettings>) => Promise<void>;
+  setInfo: (info: AppInfo) => void;
+  toast: (text: string, kind?: Toast['kind']) => void;
+  dismissToast: (id: number) => void;
+
+  commit: (tree: GameTree, current?: number) => void;
+  undo: () => void;
+  redo: () => void;
+  goto: (id: number) => void;
+  gotoStep: (delta: number) => void;
+  gotoStart: () => void;
+  gotoEnd: () => void;
+
+  play: (point: number) => void;
+  playColor: (color: 1 | 2, point: number) => void;
+  pass: () => void;
+  playAiMove: (force?: boolean) => Promise<void>;
+  maybeAiTurn: () => Promise<void>;
+  doHint: () => Promise<void>;
+  setHint: (move: string | null) => void;
+  resign: () => void;
+
+  newGame: (opts: Partial<GameConfig> & { size?: number; komi?: number; handicap?: number; rules?: string }) => void;
+  loadSgf: (content: string, path?: string) => void;
+  importPosition: (stones: number[], size: number, asNew: boolean) => void;
+  setTool: (t: Tool) => void;
+  setShowOwnership: (v: boolean) => void;
+  setHover: (p: number | null) => void;
+  setSetupStone: (point: number, color: Stone) => void;
+  toggleMark: (type: MarkType, point: number) => void;
+  setComment: (text: string) => void;
+  updateGameInfo: (patch: Partial<GameInfo>) => void;
+  deleteCurrentNode: () => void;
+  promoteCurrent: () => void;
+  swapColors: () => void;
+  clearBoard: () => void;
+
+  startAnalysis: (force?: boolean) => Promise<void>;
+  stopAnalysis: () => Promise<void>;
+  toggleAnalysis: () => Promise<void>;
+  setAnalysis: (s: AnalysisSnapshot | null) => void;
+  setThinking: (v: boolean) => void;
+  setEngineStatus: (s: EngineStatus) => void;
+  pushLog: (t: string) => void;
+  setDialog: (d: DialogName) => void;
+  openImage: (img: { dataUrl: string; name: string } | null) => void;
+  setBrowserOpen: (v: boolean) => void;
+  setSplit: (v: number) => void;
+  setZoom: (v: number) => void;
+  setDeadStones: (v: number[]) => void;
+  setFinished: (v: string | null) => void;
+}
+
+const emptyStatus: EngineStatus = {
+  running: false,
+  starting: false,
+  ready: false,
+  backend: null,
+  modelFile: null,
+  modelName: null,
+  error: null,
+  gtpVersion: null,
+  name: null
+};
+
+function sgfFor(tree: GameTree, node: number): string {
+  return serializeMainLineTo(tree, node);
+}
+
+export const useStore = create<AppStore>((set, get) => ({
+  ready: false,
+  settings: { ...DEFAULT_SETTINGS },
+  info: null,
+  theme: 'dark',
+
+  tree: createTree(19, 7.5),
+  current: 1,
+  past: [],
+  future: [],
+  filePath: null,
+  dirty: false,
+
+  tool: 'play',
+  hover: null,
+  cursor: null,
+
+  engineStatus: emptyStatus,
+  analysis: null,
+  analyzing: false,
+  thinking: false,
+  hintMove: null,
+  engineLogs: [],
+
+  game: { mode: 'manual', humanColor: BLACK, visits: 400, timeMs: 3000, temperature: 0, allowResign: true },
+  finished: null,
+  deadStones: [],
+
+  dialog: null,
+  image: null,
+  browserOpen: false,
+  splitRatio: 0.5,
+  zoom: 1,
+  showOwnership: false,
+  toasts: [],
+
+  async boot() {
+    const [settings, info] = await Promise.all([window.api.settings.get(), window.api.app.info()]);
+    const st = await window.api.engine.status().catch(() => null);
+    const theme: 'dark' | 'light' =
+      settings.theme === 'system'
+        ? window.matchMedia('(prefers-color-scheme: dark)').matches
+          ? 'dark'
+          : 'light'
+        : settings.theme;
+    document.documentElement.dataset.theme = theme;
+    set({
+      settings,
+      info,
+      theme,
+      ready: true,
+      // 界面刷新时引擎可能还在跑，状态要以主进程为准，别显示成没启动
+      engineStatus: st ?? get().engineStatus,
+      game: { ...get().game, visits: settings.playVisits, timeMs: settings.playTimeMs }
+    });
+    // 开机就把引擎拉起来，不等到用户点了"让引擎落一手"才在背后偷偷启动：
+    // 首次运行要针对显卡做 OpenCL 调优，可能十几分钟，这段等待必须看得见
+    //（面板上显示启动中，引擎日志里滚出调优进度）。已经跑着就别重复启动。
+    if (!get().engineStatus.running && !get().engineStatus.starting) {
+      set({ engineStatus: { ...get().engineStatus, starting: true } });
+      void (async () => {
+        try {
+          const started = await window.api.engine.start();
+          set({ engineStatus: started });
+          if (started.ready) get().toast(`引擎就绪：${started.modelName}（${started.backend}）`, 'success');
+        } catch (e) {
+          set({ engineStatus: { ...get().engineStatus, starting: false } });
+          get().toast('引擎启动失败：' + (e instanceof Error ? e.message : String(e)), 'error');
+        }
+      })();
+    }
+  },
+
+  async setSettings(patch) {
+    const next = await window.api.settings.set(patch);
+    const theme: 'dark' | 'light' =
+      next.theme === 'system'
+        ? window.matchMedia('(prefers-color-scheme: dark)').matches
+          ? 'dark'
+          : 'light'
+        : next.theme;
+    document.documentElement.dataset.theme = theme;
+    set({ settings: next, theme });
+  },
+
+  setInfo(info) {
+    set({ info });
+  },
+
+  toast(text, kind = 'info') {
+    const id = Date.now() + Math.random();
+    set({ toasts: [...get().toasts, { text, kind, id }] });
+    setTimeout(() => get().dismissToast(id), kind === 'error' ? 6000 : 3200);
+  },
+
+  dismissToast(id) {
+    set({ toasts: get().toasts.filter((t) => t.id !== id) });
+  },
+
+  commit(tree, current) {
+    const cur = get().current;
+    const nextCurrent = current ?? (tree.nodes[cur] ? cur : tree.root);
+    set({
+      tree,
+      current: nextCurrent,
+      past: [...get().past.slice(-120), get().tree],
+      future: [],
+      dirty: true
+    });
+  },
+
+  undo() {
+    const { past, tree, game } = get();
+    if (past.length === 0) return;
+    const prev = past[past.length - 1];
+    // 人机对局时一次退两步，回到自己该下的时候
+    let target = past.length - 1;
+    let chosen = prev;
+    if (game.mode === 'vs-ai' && past.length >= 2) {
+      const two = past[past.length - 2];
+      const aiColor = (3 - game.humanColor) as 1 | 2;
+      const mainLen = (t: GameTree): number => {
+        let cur = t.root;
+        let last: number = t.root;
+        while (t.nodes[cur]) {
+          last = cur;
+          const kids = t.nodes[cur].children;
+          if (kids.length === 0) break;
+          cur = kids[0];
+        }
+        return last;
+      };
+      const prevLast = mainLen(prev);
+      const mv = moveAtSized(prev, prevLast);
+      if (mv && mv.color === aiColor) {
+        target = past.length - 2;
+        chosen = two;
+      }
+    }
+    void tree;
+    const past2 = past.slice(0, target);
+    let endNode: number = chosen.root;
+    let cur = chosen.root;
+    while (chosen.nodes[cur]) {
+      endNode = cur;
+      const kids = chosen.nodes[cur].children;
+      if (kids.length === 0) break;
+      cur = kids[0];
+    }
+    set({
+      tree: chosen,
+      current: endNode,
+      past: past2,
+      future: [get().tree, ...get().future].slice(0, 120),
+      dirty: true
+    });
+  },
+
+  redo() {
+    const { future, tree } = get();
+    if (future.length === 0) return;
+    const next = future[0];
+    let endNode: number = next.root;
+    let cur = next.root;
+    while (next.nodes[cur]) {
+      endNode = cur;
+      const kids = next.nodes[cur].children;
+      if (kids.length === 0) break;
+      cur = kids[0];
+    }
+    set({
+      tree: next,
+      current: endNode,
+      past: [...get().past, tree],
+      future: future.slice(1),
+      dirty: true
+    });
+  },
+
+  goto(id) {
+    if (!get().tree.nodes[id]) return;
+    set({ current: id, hintMove: null });
+  },
+
+  gotoStep(delta) {
+    const { tree, current } = get();
+    if (delta < 0) {
+      const parent = tree.nodes[current]?.parent;
+      if (parent !== null && parent !== undefined) get().goto(parent);
+      return;
+    }
+    let cur = current;
+    for (let i = 0; i < delta; i++) {
+      const kids = tree.nodes[cur]?.children ?? [];
+      if (kids.length === 0) break;
+      cur = kids[0];
+    }
+    get().goto(cur);
+  },
+
+  gotoStart() {
+    get().goto(get().tree.root);
+  },
+
+  gotoEnd() {
+    const tree = get().tree;
+    let cur = tree.root;
+    while (tree.nodes[cur]?.children.length) cur = tree.nodes[cur].children[0];
+    get().goto(cur);
+  },
+
+  play(point) {
+    const { tree, current } = get();
+    const color = colorToPlayAt(tree, current);
+    get().playColor(color, point);
+  },
+
+  playColor(color, point) {
+    const { tree, current, finished } = get();
+    if (finished) return;
+    const pos = positionAt(tree, current);
+    if (point !== PASS) {
+      const check = pos.check(color, point);
+      if (!check.ok) {
+        get().toast(check.reason ?? '这一手不能下', 'error');
+        return;
+      }
+    }
+    const res = addMoveNode(tree, current, color, point, { mainLine: true });
+    get().commit(res.tree, res.id);
+    get().setAnalysis(null);
+    void get().maybeAiTurn();
+  },
+
+  pass() {
+    const { tree, current } = get();
+    const color = colorToPlayAt(tree, current);
+    const res = addMoveNode(tree, current, color, PASS, { mainLine: true });
+    get().commit(res.tree, res.id);
+    // 连续两停，终局
+    const path = pathTo(res.tree, res.id);
+    const lastTwo = path.slice(-2).map((id) => moveAtSized(res.tree, id));
+    if (lastTwo.length === 2 && lastTwo.every((m) => m && m.point === PASS)) {
+      get().setDialog('score');
+    } else {
+      void get().maybeAiTurn();
+    }
+  },
+
+  async playAiMove(force = false) {
+    const { tree, current, game, finished } = get();
+    if (finished || get().thinking) return;
+    const color = colorToPlayAt(tree, current);
+    const aiColor = (3 - game.humanColor) as 1 | 2;
+    if (!force && color !== aiColor && game.mode !== 'ai-vs-ai') return;
+    const nodeAtRequest = current;
+    get().setThinking(true);
+    try {
+      const res = await window.api.engine.genMove({
+        sgf: sgfFor(tree, current),
+        color: color === BLACK ? 'B' : 'W',
+        maxVisits: game.visits,
+        maxTimeMs: game.timeMs,
+        allowResign: game.allowResign,
+        temperature: game.temperature
+      });
+      if (get().current !== nodeAtRequest) return; // 用户已经切换了节点
+      if (res.error) {
+        get().toast('引擎出错：' + res.error, 'error');
+        return;
+      }
+      if (res.resigned) {
+        const winner = color === BLACK ? '白' : '黑';
+        get().setFinished(`白胜` === winner + '胜' ? winner + '胜（认输）' : `${winner}中盘胜`);
+        const t = get().tree;
+        get().commit(setProp(t, t.root, 'RE', [`${winner === '黑' ? 'B' : 'W'}+R`]), get().current);
+        get().toast(`${color === BLACK ? '黑方' : '白方'}认输，${winner}中盘胜`, 'success');
+        return;
+      }
+      const size = propNum(tree, tree.root, 'SZ', 19);
+      const point = Position.parseVertex(res.move, size);
+      const r2 = addMoveNode(get().tree, get().current, color, point, { mainLine: true });
+      get().commit(r2.tree, r2.id);
+      if (get().game.mode === 'ai-vs-ai') setTimeout(() => void get().maybeAiTurn(), 400);
+    } catch (e) {
+      get().toast('引擎出错：' + (e instanceof Error ? e.message : String(e)), 'error');
+    } finally {
+      get().setThinking(false);
+    }
+  },
+
+  async maybeAiTurn() {
+    const { game, tree, current, finished } = get();
+    if (finished) return;
+    if (game.mode === 'manual') return;
+    if (game.mode === 'ai-vs-ai') {
+      void get().playAiMove();
+      return;
+    }
+    const color = colorToPlayAt(tree, current);
+    const aiColor = (3 - game.humanColor) as 1 | 2;
+    if (color === aiColor) void get().playAiMove();
+  },
+
+  async doHint() {
+    const { tree, current } = get();
+    const color = colorToPlayAt(tree, current);
+    get().toast('正在计算推荐点…');
+    const res = await window.api.engine.hint(sgfFor(tree, current), get().settings.analyzeVisits, color === BLACK ? 'B' : 'W');
+    if (res.error) {
+      get().toast('引擎出错：' + res.error, 'error');
+      return;
+    }
+    set({ hintMove: res.move });
+    get().toast(`推荐 ${res.move}，胜率 ${(res.winrate * 100).toFixed(1)}%，目差 ${res.scoreLead.toFixed(1)}`);
+  },
+
+  setHint(move) {
+    set({ hintMove: move });
+  },
+
+  resign() {
+    const { tree, current, game } = get();
+    const color = colorToPlayAt(tree, current);
+    void game;
+    const winner = color === BLACK ? 'W' : 'B';
+    const winnerName = winner === 'B' ? '黑' : '白';
+    get().commit(setProp(tree, tree.root, 'RE', [`${winner}+R`]), current);
+    get().setFinished(`${winnerName}中盘胜（对方认输）`);
+    get().toast(`${color === BLACK ? '黑方' : '白方'}认输，${winnerName}中盘胜`, 'success');
+  },
+
+  newGame(opts) {
+    const size = opts.size ?? 19;
+    const komi = opts.komi ?? (size === 19 ? 7.5 : size === 13 ? 7.5 : 7.5);
+    const handicap = opts.handicap ?? 0;
+    const tree = createTree(size, komi, handicap, opts.rules ?? 'Chinese');
+    const humanColor = opts.humanColor ?? (handicap > 1 ? WHITE : BLACK);
+    set({
+      tree,
+      current: tree.root,
+      past: [],
+      future: [],
+      filePath: null,
+      dirty: false,
+      analysis: null,
+      finished: null,
+      deadStones: [],
+      hintMove: null,
+      game: { ...get().game, ...opts, humanColor }
+    });
+    void get().maybeAiTurn();
+  },
+
+  loadSgf(content, path) {
+    try {
+      const trees = parseSgf(content);
+      const tree = trees[0];
+      let cur = tree.root;
+      while (tree.nodes[cur]?.children.length) cur = tree.nodes[cur].children[0];
+      set({
+        tree,
+        current: cur,
+        past: [],
+        future: [],
+        filePath: path ?? null,
+        dirty: false,
+        analysis: null,
+        finished: null,
+        deadStones: [],
+        game: { ...get().game, mode: 'manual' }
+      });
+      const info = infoFromTree(tree);
+      get().toast(`已载入棋谱：${info.blackName || '黑'} 对 ${info.whiteName || '白'}`, 'success');
+    } catch (e) {
+      get().toast('棋谱解析失败：' + (e instanceof Error ? e.message : String(e)), 'error');
+    }
+  },
+
+  importPosition(stones, size, asNew) {
+    const sgfChar = (n: number): string => String.fromCharCode(97 + n);
+    const ab: string[] = [];
+    const aw: string[] = [];
+    for (let i = 0; i < stones.length; i++) {
+      const x = i % size;
+      const y = Math.floor(i / size);
+      if (stones[i] === BLACK) ab.push(sgfChar(x) + sgfChar(y));
+      else if (stones[i] === WHITE) aw.push(sgfChar(x) + sgfChar(y));
+    }
+    if (asNew) {
+      const base = createTree(size, 7.5, 0, 'Chinese');
+      let t = setProp(base, base.root, 'AB', ab.length ? ab : null);
+      t = setProp(t, t.root, 'AW', aw.length ? aw : null);
+      set({
+        tree: t,
+        current: t.root,
+        past: [],
+        future: [],
+        filePath: null,
+        dirty: true,
+        analysis: null,
+        finished: null,
+        deadStones: [],
+        game: { ...get().game, mode: 'manual' }
+      });
+      get().toast(`已导入局面：黑 ${ab.length} 白 ${aw.length}`, 'success');
+      return;
+    }
+    const { tree, current } = get();
+    const props: Record<string, string[]> = {};
+    if (ab.length) props.AB = ab;
+    if (aw.length) props.AW = aw;
+    const withSetup = addChild(tree, current, props);
+    const final = makeMainLine(withSetup.tree, withSetup.id);
+    set({
+      tree: final,
+      current: withSetup.id,
+      past: [...get().past, tree],
+      future: [],
+      dirty: true,
+      analysis: null
+    });
+    get().toast(`已把局面接到当前谱后面：黑 ${ab.length} 白 ${aw.length}`, 'success');
+  },
+
+  setTool(t) {
+    set({ tool: t });
+  },
+
+  setShowOwnership(v) {
+    set({ showOwnership: v });
+  },
+
+  setHover(p) {
+    set({ hover: p });
+  },
+
+  /** 手工摆子：改当前节点的 AB / AW / AE。 */
+  setSetupStone(point, color) {
+    const { tree, current } = get();
+    const size = propNum(tree, tree.root, 'SZ', 19);
+    const x = point % size;
+    const y = Math.floor(point / size);
+    const value = String.fromCharCode(97 + x) + String.fromCharCode(97 + y);
+    const node = tree.nodes[current];
+    const strip = (list: string[] | undefined): string[] => (list ?? []).filter((v) => v !== value);
+    const ab = strip(node.props.AB);
+    const aw = strip(node.props.AW);
+    let ae = strip(node.props.AE);
+    if (color === BLACK) ab.push(value);
+    else if (color === WHITE) aw.push(value);
+    else {
+      const parent = node.parent;
+      const hadStone = parent !== null ? positionAt(tree, parent).cells[point] !== 0 : false;
+      if (hadStone) ae = [...ae, value];
+    }
+    let out = tree;
+    out = setProp(out, current, 'AB', ab.length ? ab : null);
+    out = setProp(out, current, 'AW', aw.length ? aw : null);
+    out = setProp(out, current, 'AE', ae.length ? ae : null);
+    get().commit(out, current);
+  },
+
+  toggleMark(type, point) {
+    const { tree, current } = get();
+    const size = propNum(tree, tree.root, 'SZ', 19);
+    const key =
+      type === 'triangle'
+        ? 'TR'
+        : type === 'square'
+          ? 'SQ'
+          : type === 'circle'
+            ? 'CR'
+            : type === 'cross'
+              ? 'MA'
+              : type === 'dim'
+                ? 'SL'
+                : 'LB';
+    const x = point % size;
+    const y = Math.floor(point / size);
+    const value = String.fromCharCode(97 + x) + String.fromCharCode(97 + y);
+    const node = tree.nodes[current];
+    const cur = node.props[key] ?? [];
+    const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
+    get().commit(setProp(tree, current, key, next.length ? next : null), current);
+  },
+
+  setComment(text) {
+    const { tree, current } = get();
+    get().commit(setProp(tree, current, 'C', text ? [text] : null), current);
+  },
+
+  updateGameInfo(patch) {
+    const { tree } = get();
+    let out = tree;
+    const set = (key: string, value: string | number | undefined): void => {
+      if (value === undefined) return;
+      out = setProp(out, out.root, key, value === '' ? null : [String(value)]);
+    };
+    if (patch.size !== undefined) set('SZ', patch.size);
+    if (patch.komi !== undefined) set('KM', patch.komi);
+    if (patch.handicap !== undefined) set('HA', patch.handicap > 1 ? patch.handicap : '');
+    if (patch.rules !== undefined) set('RU', patch.rules);
+    if (patch.blackName !== undefined) set('PB', patch.blackName);
+    if (patch.whiteName !== undefined) set('PW', patch.whiteName);
+    if (patch.blackRank !== undefined) set('BR', patch.blackRank);
+    if (patch.whiteRank !== undefined) set('WR', patch.whiteRank);
+    if (patch.result !== undefined) set('RE', patch.result);
+    if (patch.date !== undefined) set('DT', patch.date);
+    if (patch.event !== undefined) set('EV', patch.event);
+    if (patch.place !== undefined) set('PC', patch.place);
+    if (patch.gameName !== undefined) set('GN', patch.gameName);
+    get().commit(out, get().current);
+  },
+
+  deleteCurrentNode() {
+    const { tree, current } = get();
+    if (current === tree.root) {
+      get().toast('根节点不能删除', 'error');
+      return;
+    }
+    const parent = tree.nodes[current]?.parent ?? tree.root;
+    get().commit(deleteSubtree(tree, current), parent);
+  },
+
+  promoteCurrent() {
+    const { tree, current } = get();
+    get().commit(makeMainLine(tree, current), current);
+    get().toast('已把这条分支设为主线');
+  },
+
+  swapColors() {
+    const { tree } = get();
+    const swap = (tree: GameTree): GameTree => {
+      const nodes: typeof tree.nodes = {};
+      for (const k of Object.keys(tree.nodes)) {
+        const n = tree.nodes[Number(k)];
+        const props = { ...n.props };
+        if (props.B) {
+          props.W = props.B;
+          delete props.B;
+        } else if (props.W) {
+          props.B = props.W;
+          delete props.W;
+        }
+        const ab = props.AB;
+        const aw = props.AW;
+        if (ab || aw) {
+          if (ab) props.AW = ab;
+          else delete props.AW;
+          if (aw) props.AB = aw;
+          else delete props.AB;
+        }
+        nodes[n.id] = {
+          ...n,
+          props,
+          children: n.children.slice(),
+          parent: n.parent
+        };
+      }
+      return { ...tree, nodes };
+    };
+    get().commit(swap(tree), get().current);
+    get().toast('已交换黑白');
+  },
+
+  clearBoard() {
+    const { tree, current } = get();
+    let out = setProp(tree, current, 'AB', null);
+    out = setProp(out, current, 'AW', null);
+    get().commit(out, current);
+  },
+
+  async startAnalysis(force = false) {
+    const { tree, current, settings, analyzing } = get();
+    if (analyzing && !force) return;
+    const color = colorToPlayAt(tree, current);
+    if (!get().engineStatus.running) {
+      const st = await window.api.engine.start();
+      get().setEngineStatus(st);
+      if (!st.ready) {
+        get().toast(st.error ?? '引擎没有启动', 'error');
+        return;
+      }
+    }
+    const res = await window.api.engine.analyzeStart({
+      sgf: sgfFor(tree, current),
+      visits: settings.analyzeVisits,
+      maxTimeMs: 0,
+      ownership: true,
+      lines: 8,
+      nodeId: current,
+      turn: color === BLACK ? 'B' : 'W'
+    });
+    if (!res.ok) {
+      get().toast('分析启动失败：' + (res.error ?? ''), 'error');
+      return;
+    }
+    set({ analyzing: true, analysis: null });
+  },
+
+  async stopAnalysis() {
+    await window.api.engine.analyzeStop();
+    set({ analyzing: false, analysis: null });
+  },
+
+  async toggleAnalysis() {
+    if (get().analyzing) await get().stopAnalysis();
+    else await get().startAnalysis();
+  },
+
+  setAnalysis(s) {
+    set({ analysis: s });
+  },
+
+  setThinking(v) {
+    set({ thinking: v });
+  },
+
+  setEngineStatus(s) {
+    set({ engineStatus: s });
+  },
+
+  pushLog(t) {
+    const logs = [...get().engineLogs, t];
+    set({ engineLogs: logs.slice(-400) });
+  },
+
+  setDialog(d) {
+    set({ dialog: d });
+  },
+
+  openImage(img) {
+    set({ image: img, dialog: img ? 'image' : null });
+  },
+
+  setBrowserOpen(v) {
+    set({ browserOpen: v });
+  },
+
+  setSplit(v) {
+    set({ splitRatio: Math.max(0.25, Math.min(0.75, v)) });
+  },
+
+  setZoom(v) {
+    set({ zoom: Math.max(0.6, Math.min(1.8, Number(v.toFixed(2)))) });
+  },
+
+  setDeadStones(v) {
+    set({ deadStones: v });
+  },
+
+  setFinished(v) {
+    set({ finished: v });
+  }
+}));
+
+// 一些便于组件使用的小工具
+export function useCurrentPosition(): Position {
+  const tree = useStore((s) => s.tree);
+  const current = useStore((s) => s.current);
+  return positionAt(tree, current);
+}
+
+export function useCurrentMarks(): Mark[] {
+  const tree = useStore((s) => s.tree);
+  const current = useStore((s) => s.current);
+  return marksAt(tree, current);
+}
+
+export function useMoveNumber(): number {
+  const tree = useStore((s) => s.tree);
+  const current = useStore((s) => s.current);
+  return moveNumberAt(tree, current);
+}
+
+export function useBoardSize(): number {
+  const tree = useStore((s) => s.tree);
+  return propNum(tree, tree.root, 'SZ', 19);
+}
+
+export function currentSgf(): string {
+  const { tree, current } = useStore.getState();
+  return sgfFor(tree, current);
+}
+
+export function currentMainLineSgf(): string {
+  const { tree } = useStore.getState();
+  return serializeMainLineTo(tree, tree.root);
+}
+
+export function cloneCurrentTree(): GameTree {
+  return cloneTree(useStore.getState().tree);
+}

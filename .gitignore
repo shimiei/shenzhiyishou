@@ -1,0 +1,17 @@
+node_modules/
+dist/
+release/
+*.log
+.DS_Store
+
+# 引擎与网络体积大，而且都能公开下载，不进版本库；程序里有下载入口。
+# 随包的小网络（b6c96）留在库里，这样克隆下来就能直接打包；
+# saved_model 那份是 TensorFlow 用的，程序只读 model.txt.gz，打包时也排除了，不入库。
+engine/
+models/*.bin.gz
+models/**/saved_model/
+
+# 验收时截的图
+tools/shots/
+# tools/devtest.mjs 生成的验收实例外壳
+tools/devtest-app/

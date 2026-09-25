@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>围棋在线对局（识别测试页）</title>
+<style>
+  body { margin: 0; background: #eceff4; font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif; color: #223; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 18px 0 40px; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  .meta { color: #667; font-size: 12px; margin-bottom: 10px; }
+  .board { background: #dcb35c; border: 10px solid #b98c3c; border-radius: 4px; display: inline-block; line-height: 0; }
+  .side { margin-top: 10px; font-size: 12px; color: #556; }
+  .pill { display: inline-block; background: #fff; border: 1px solid #ccd; border-radius: 999px; padding: 1px 9px; margin-right: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>对局室 · 第 3 局</h1>
+  <div class="meta">黑：测试棋手（9d）　白：对手（9d）　时限：各 30 分钟　贴目 7.5</div>
+  <div class="board"><canvas id="board" width="640" height="640"></canvas></div>
+  <div class="side">
+    <span class="pill">手数 24</span><span class="pill">黑 12 子</span><span class="pill">白 12 子</span>
+  </div>
+</div>
+<script>
+  // 一条固定不变的测试局面：谁被改了都跑不过比对
+  const BLACK = ['D4', 'Q4', 'D16', 'Q16', 'K10', 'C10', 'R10', 'Q10', 'D10', 'F5', 'Q14', 'D14'];
+  const WHITE = ['C6', 'R6', 'C14', 'R14', 'Q5', 'D5', 'K16', 'K4', 'F17', 'C3', 'R17', 'Q12'];
+  const LETTERS = 'ABCDEFGHJKLMNOPQRSTUVWXYZ';
+  const SIZE = 19;
+  // 棋盘跟着窗口宽度走：真实的对局站也是这样，分屏窄的时候会自动缩小。
+  const measure = () => Math.max(260, Math.min(640, window.innerWidth - 26));
+  let PX = measure();
+  const MARGIN = () => PX * 0.072;
+  const step = () => (PX - MARGIN() * 2) / (SIZE - 1);
+  const at = (v) => {
+    const x = LETTERS.indexOf(v[0].toUpperCase());
+    const y = SIZE - parseInt(v.slice(1), 10);
+    return [MARGIN() + x * step(), MARGIN() + y * step()];
+  };
+  const gi = (v) => (SIZE - parseInt(v.slice(1), 10)) * SIZE + LETTERS.indexOf(v[0].toUpperCase());
+  const cv = document.getElementById('board');
+  const ctx = cv.getContext('2d');
+  function draw() {
+    PX = measure();
+    cv.width = PX;
+    cv.height = PX;
+    const M = MARGIN();
+    const sp = step();
+    ctx.clearRect(0, 0, PX, PX);
+    // 木纹底
+    const grad = ctx.createLinearGradient(0, 0, PX, PX);
+    grad.addColorStop(0, '#e3bd6c');
+    grad.addColorStop(0.5, '#dcb35c');
+    grad.addColorStop(1, '#d3a94f');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, PX, PX);
+    ctx.strokeStyle = 'rgba(78,50,14,0.75)';
+    ctx.lineWidth = Math.max(0.8, PX / 560);
+    for (let i = 0; i < SIZE; i++) {
+      const p = M + i * sp;
+      ctx.beginPath();
+      ctx.moveTo(M, p); ctx.lineTo(PX - M, p);
+      ctx.moveTo(p, M); ctx.lineTo(p, PX - M);
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(60,38,10,0.85)';
+    for (const [sx, sy] of [[3, 3], [3, 9], [3, 15], [9, 3], [9, 9], [9, 15], [15, 3], [15, 9], [15, 15]]) {
+      ctx.beginPath();
+      ctx.arc(M + sx * sp, M + sy * sp, Math.max(1.8, sp * 0.1), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const R = sp * 0.47;
+    function stone(v, color) {
+      const [x, y] = at(v);
+      ctx.beginPath();
+      ctx.arc(x + R * 0.09, y + R * 0.12, R, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      ctx.fill();
+      const g = ctx.createRadialGradient(x - R * 0.35, y - R * 0.4, R * 0.15, x, y, R);
+      if (color === 'b') { g.addColorStop(0, '#6a6a72'); g.addColorStop(0.45, '#242429'); g.addColorStop(1, '#0a0a0d'); }
+      else { g.addColorStop(0, '#ffffff'); g.addColorStop(0.6, '#f2f2f0'); g.addColorStop(1, '#cfcfc8'); }
+      ctx.beginPath();
+      ctx.arc(x, y, R, 0, Math.PI * 2);
+      ctx.fillStyle = g;
+      ctx.fill();
+      ctx.strokeStyle = color === 'b' ? 'rgba(0,0,0,0.5)' : 'rgba(120,120,110,0.55)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    WHITE.forEach((v) => stone(v, 'w'));
+    BLACK.forEach((v) => stone(v, 'b'));
+  }
+  draw();
+  window.addEventListener('resize', draw);
+
+  // 供比对用：坐标与索引
+  window.__expected = {
+    size: SIZE,
+    black: BLACK, white: WHITE,
+    blackIdx: BLACK.map(gi), whiteIdx: WHITE.map(gi)
+  };
+</script>
+</body>
+</html>

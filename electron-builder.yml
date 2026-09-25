@@ -1,0 +1,48 @@
+appId: com.shenzhiyishou.app
+productName: 神之一手
+copyright: © 2026
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - package.json
+extraResources:
+  - from: engine
+    to: engine
+    filter:
+      - '**/*'
+      - '!**/gtp_logs/**'
+      - '!**/*.log'
+  # 按约定只随包带小网络（b6c96，4.7 MB）；大网络交给应用内下载，
+  # 否则安装包会从 60 MB 膨胀到 400 MB 以上。
+  - from: models
+    to: models
+    filter:
+      - 'b6c96-s175395328-d26788732/model.txt.gz'
+      - 'b6c96-s175395328-d26788732/model.config.json'
+      - '!**/*.bin.gz'
+      - '!**/saved_model/**'
+asar: true
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  artifactName: 神之一手-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 神之一手
+  installerLanguages:
+    - zh_CN
+  language: '2052'
+portable:
+  artifactName: 神之一手-便携版-${version}.${ext}

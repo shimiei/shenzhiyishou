@@ -1,0 +1,38 @@
+{
+  "name": "shenzhiyishou",
+  "productName": "神之一手",
+  "version": "0.1.0",
+  "description": "围棋对局与棋谱工具：AI 对局、图片与 SGF 导入、棋谱编辑、内置浏览器截谱",
+  "main": "dist/main/index.js",
+  "author": "30109",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.preload.json && tsc -p tsconfig.renderer.json --noEmit",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:preload": "esbuild src/preload.ts --bundle --platform=node --format=cjs --target=node20 --external:electron --outfile=dist/preload.js && node tools/check-preload.mjs",
+    "build:renderer": "vite build",
+    "build": "npm run build:main && npm run build:preload && npm run build:renderer",
+    "dev": "npm run build:main && npm run build:preload && cross-env NODE_ENV=development vite",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win --x64",
+    "test:rules": "node tools/rules-selftest.mjs",
+    "test:window": "node tools/window-state-selftest.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "cross-env": "^7.0.3",
+    "electron": "^33.0.2",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.21.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "zustand": "^4.5.5"
+  }
+}
