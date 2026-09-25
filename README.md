@@ -29,12 +29,13 @@ npm run dist         # 出安装包和便携版，产物在 release/
 npm test                      # 下面三份纯逻辑自测一起跑
 npm run test:rules            # 规则引擎：落子、提子、自杀、劫、超级劫、数子、坐标
 npm run test:window           # 窗口尺寸与位置：居中、越界拉回、换屏幕、副屏更小
-npm run test:ui               # 标签页规则、地址栏输入、分栏夹取与像素保底
+npm run test:ui               # 标签页规则、地址栏输入、分栏夹取、送去引擎的局面
+npm run test:engine           # 真引擎复验：每一份局面 loadsgf 后盘面与行棋方都对得上
 node tools/gtp-selftest.mjs   # 真引擎链路：启动、loadsgf、落子、分析
 node tools/cv-check.mjs 图片 --answer 答案.sgf   # 图片识别的准确率回归
 ```
 
-规则引擎那份自测有 59 项断言，窗口 37 项，界面逻辑 49 项，都能直接 `node tools/rules-selftest.mjs`、`node tools/window-state-selftest.mjs`、`node tools/ui-logic-selftest.mjs` 跑。它们存在的理由很实在：这类错不会让类型检查报错，只会让程序悄悄下错棋、开出一个拖不动的窗口，或者关掉标签跳到别的页面上。
+规则引擎那份自测有 70 项断言，窗口 37 项，界面逻辑 90 项，都能直接 `node tools/rules-selftest.mjs`、`node tools/window-state-selftest.mjs`、`node tools/ui-logic-selftest.mjs` 跑。它们存在的理由很实在：这类错不会让类型检查报错，只会让程序悄悄下错棋、开出一个拖不动的窗口，或者关掉标签跳到别的页面上。`test:engine` 要开真引擎，二十多秒，所以不在 `npm test` 里。
 
 跑起来的实例也能从外面看：`node tools/devtest.mjs --remote-debugging-port=9223` 起一个独立配置的验收实例，再用 `node tools/live-probe.mjs "<表达式>"` 在它的界面里求值，截图和点击见 `tools/cdp.mjs`。
 
@@ -83,6 +84,14 @@ models/kata1-b18c384nbt-s9996604416-d4316597426.bin.gz   最强网络，93 MB
 第一次运行没有这个缓存，OpenCL 后端要针对你的显卡搜索并编译内核参数，KataGo 会打印几十行 Tuning 进度。这一步在本机实测约 6 分钟（随包的小网络，核显），是程序第一次打开要等的最长时间；之后结果缓存在运行目录里，第二次启动就快了。这段等待期间界面是活的，引擎日志面板会一直滚进度，不要以为卡死了。不想让它占着显卡，随时可以在引擎面板上点"停止引擎"，下次要用时它会自己再起来。
 
 另外，新装的机器上只有随包的小网络，而设置里默认指向大网络，这时程序会自动退回小网络启动，并在引擎日志里写一行说明。想用大网络在"引擎与网络"里下载即可。
+
+### 送去引擎的局面长什么样
+
+KataGo 的 `loadsgf` 只认根节点上的摆子：第二个节点往后只要出现 AB / AW / AE，整谱会被拒收，报 "Found stone placements after the root"。而这个程序允许把摆子写在任意节点上（摆子工具改的是当前节点，从图片"接到当前谱后续"会另起一个只有摆子的节点），所以每次送引擎之前会把整条路径上的摆子收拢进根节点，并在根节点写上 `PL` 把轮次钉死。
+
+轮次要写死是因为：根节点上只有摆子、没有手数时，KataGo 按让子惯例算白走，而界面按"没有手数就是黑先"来显示，不写 `PL` 两边会差一个回合（实时分析会把白方的候选点当成黑方的报给你）。收拢完的程序会用自己的解析器把这份 SGF 读回来，跟界面上的盘面逐点比一遍，改动了就不认，改发"纯局面"（根节点直接列出每一颗子，不带手数）。极少数情况下会走这条退路，比如某一步被 `AE` 拿掉的是前面某一手下的子，这种没法只用根节点表达。
+
+`npm run test:engine` 会把这几类局面逐条喂给真引擎，比对盘面和行棋方。
 
 ### 从内置浏览器截取棋盘
 

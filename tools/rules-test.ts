@@ -5,6 +5,9 @@
  */
 import { BLACK, PASS, WHITE } from '../src/shared/types';
 import { Position } from '../src/renderer/core/go/position';
+import { parseSgf } from '../src/renderer/core/sgf/parse';
+import { serializeSgf } from '../src/renderer/core/sgf/serialize';
+import { addMoveNode, createTree, moveAtSized, positionAt } from '../src/renderer/core/sgf/tree';
 
 let failed = 0;
 let passed = 0;
@@ -226,6 +229,81 @@ section('坐标换算');
   eq(Position.parseVertex('pass', size), PASS, 'pass 解析成 PASS');
   eq(Position.parseVertex('tt', size), PASS, 'tt 解析成 PASS（老引擎的弃着写法）');
   eq(Position.parseVertex('A20', size), PASS, '越界坐标退化成 PASS');
+}
+
+// ── 棋谱到棋盘 ──────────────────────────────────────────────────────────
+section('棋谱到棋盘：手数坐标');
+{
+  // 这一段是回归测试。positionAt 曾经把 B[dd] 这样的坐标按"行 × 52"解开（52 是内部旧写法的棋盘宽度），
+  // 于是点上去的子会跑到别的交叉点，靠下半盘的子干脆消失。落子、提子、数子全跟着错，
+  // 而类型检查和当时的自测都看不出问题。
+  const t = createTree(19, 7.5, 0, 'Chinese');
+  const one = addMoveNode(t, t.root, BLACK, at(new Position(19), 3, 3));
+  eq(one.id, 2, '第一手挂在根节点下面');
+  const p1 = positionAt(one.tree, one.id);
+  eq(p1.cells[at(p1, 3, 3)], BLACK, 'B[dd] 摆在左上角星位，不是别的点');
+  eq(p1.moveNumber, 1, '手数记上了');
+  eq(p1.toPlay, WHITE, '轮到白');
+
+  // 下半盘的子曾经因为解出来的下标超出棋盘而被悄悄丢掉
+  const two = addMoveNode(one.tree, one.id, WHITE, at(p1, 15, 15));
+  const p2 = positionAt(two.tree, two.id);
+  eq(p2.cells[at(p2, 15, 15)], WHITE, '下半盘的 W[pp] 也得落在盘上');
+  eq(p2.moveNumber, 2, '两手持平');
+  eq(moveAtSized(two.tree, two.id)?.point, at(p2, 15, 15), 'moveAtSized 与 positionAt 用同一套坐标');
+
+  // 一串手数连着读，每一手都要在那里
+  let tree = createTree(19, 7.5, 0, 'Chinese');
+  let id = tree.root;
+  const played: Array<[1 | 2, number, number]> = [
+    [BLACK, 3, 15],
+    [WHITE, 15, 3],
+    [BLACK, 4, 15],
+    [WHITE, 15, 4],
+    [BLACK, 3, 3],
+    [WHITE, 2, 2]
+  ];
+  for (const [color, x, y] of played) {
+    const r = addMoveNode(tree, id, color, y * 19 + x);
+    tree = r.tree;
+    id = r.id;
+  }
+  const pos = positionAt(tree, id);
+  let allThere = true;
+  for (const [color, x, y] of played) if (pos.cells[y * 19 + x] !== color) allThere = false;
+  eq(allThere, true, '六手棋都在自己该在的交叉点上');
+  eq(pos.moveNumber, played.length, '手数也对得上');
+}
+
+// ── 导出再读回 ──────────────────────────────────────────────────────────
+section('棋谱往返：导出再解析');
+{
+  let tree = createTree(19, 7.5, 0, 'Chinese');
+  let id = tree.root;
+  for (const [color, x, y] of [
+    [BLACK, 3, 15],
+    [WHITE, 15, 3],
+    [BLACK, 3, 3],
+    [WHITE, 16, 16]
+  ] as Array<[1 | 2, number, number]>) {
+    const r = addMoveNode(tree, id, color, y * 19 + x);
+    tree = r.tree;
+    id = r.id;
+  }
+  const text = serializeSgf(tree);
+  const back = parseSgf(text)[0];
+  let cur = back.root;
+  for (;;) {
+    const kids = back.nodes[cur]?.children ?? [];
+    if (kids.length === 0) break;
+    cur = kids[0];
+  }
+  const before = positionAt(tree, id);
+  const after = positionAt(back, cur);
+  let same = before.cells.length === after.cells.length;
+  if (same) for (let i = 0; i < before.cells.length; i++) if (before.cells[i] !== after.cells[i]) same = false;
+  eq(same, true, '导出再读回来，盘面一模一样');
+  eq(after.moveNumber, before.moveNumber, '手数也一模一样');
 }
 
 console.log(`\n通过 ${passed} 项，失败 ${failed} 项`);

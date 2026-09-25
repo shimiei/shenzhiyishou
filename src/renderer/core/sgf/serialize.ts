@@ -19,7 +19,7 @@ function propOrder(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-function writeProps(props: SgfProps): string {
+export function writeProps(props: SgfProps): string {
   const keys = Object.keys(props).filter((k) => props[k] && props[k].length > 0);
   keys.sort(propOrder);
   let out = '';

@@ -153,7 +153,7 @@ function applyNode(pos: Position, n: TreeNodeData): Position {
   }
   if (n.props.PL && n.props.PL[0]) p.toPlay = n.props.PL[0].toUpperCase() === 'W' ? WHITE : BLACK;
 
-  const move = moveAt(n);
+  const move = moveAt(n, size);
   if (move) {
     const res = p.play(move.color, move.point);
     if (!res.ok) {
@@ -175,30 +175,23 @@ function applyNode(pos: Position, n: TreeNodeData): Position {
   return p;
 }
 
-export function moveAt(n: TreeNodeData): { color: 1 | 2; point: number } | null {
+/**
+ * 某节点处的落子颜色与坐标。size 必须给对：坐标是"行 × 棋盘宽"编出来的，
+ * 写死一个宽度会让 19 路上的每一手都落到别的点上去。
+ */
+export function moveAt(n: TreeNodeData, size: number): { color: 1 | 2; point: number } | null {
   const b = n.props.B;
   const w = n.props.W;
-  const size = 52;
   if (b && b.length > 0) return { color: BLACK, point: fromSgfPoint(b[0], size) };
   if (w && w.length > 0) return { color: WHITE, point: fromSgfPoint(w[0], size) };
   return null;
 }
 
-/** 某节点处的落子颜色与坐标，size 用于正确解析坐标。 */
+/** 某节点处的落子颜色与坐标，size 从棋谱的 SZ 里取。 */
 export function moveAtSized(tree: GameTree, id: number): { color: 1 | 2; point: number } | null {
   const n = tree.nodes[id];
   if (!n) return null;
-  const size = propNum(tree, tree.root, 'SZ', 19);
-  const parse = (v: string): number => {
-    if (!v) return PASS;
-    const c0 = v.charCodeAt(0) - 97;
-    const c1 = v.charCodeAt(1) - 97;
-    if (c0 < 0 || c1 < 0 || c0 >= size || c1 >= size) return PASS;
-    return c1 * size + c0;
-  };
-  if (n.props.B && n.props.B.length) return { color: BLACK, point: parse(n.props.B[0]) };
-  if (n.props.W && n.props.W.length) return { color: WHITE, point: parse(n.props.W[0]) };
-  return null;
+  return moveAt(n, propNum(tree, tree.root, 'SZ', 19));
 }
 
 export function moveNumberAt(tree: GameTree, id: number): number {

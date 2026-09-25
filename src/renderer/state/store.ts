@@ -30,7 +30,8 @@ import {
   type Mark,
   type MarkType
 } from '../core/sgf/tree';
-import { serializeMainLineTo, cloneTree } from '../core/sgf/serialize';
+import { cloneTree } from '../core/sgf/serialize';
+import { engineSgfFor } from '../core/sgf/engineSgf';
 import { parseSgf } from '../core/sgf/parse';
 import { Position } from '../core/go/position';
 import { closeTab, makeTab, openTab, stepTab, type BrowserTab } from '../core/browser/tabs';
@@ -191,8 +192,10 @@ const emptyStatus: EngineStatus = {
   name: null
 };
 
+/** 引擎要的局面：摆子得收进根节点、轮次要写死，见 core/sgf/engineSgf.ts。 */
 function sgfFor(tree: GameTree, node: number): string {
-  return serializeMainLineTo(tree, node);
+  const color = colorToPlayAt(tree, node) === BLACK ? 'B' : 'W';
+  return engineSgfFor(tree, node, color).sgf;
 }
 
 function clampRange(v: number, lo: number, hi: number): number {
@@ -649,6 +652,16 @@ export const useStore = create<AppStore>((set, get) => ({
       return;
     }
     const { tree, current } = get();
+    if (current === tree.root && Object.keys(tree.nodes).length === 1) {
+      // 空谱上导入，这盘棋本身就是这张图，直接写进根节点。
+      // 另起一个只有摆子的子节点看着一样（手数还是 0），但多出一个节点，
+      // 而且 KataGo 的 loadsgf 只认根节点上的摆子，写进子节点它整谱拒收。
+      let t = setProp(tree, tree.root, 'AB', ab.length ? ab : null);
+      t = setProp(t, tree.root, 'AW', aw.length ? aw : null);
+      get().commit(t, tree.root);
+      get().toast(`已导入局面：黑 ${ab.length} 白 ${aw.length}`, 'success');
+      return;
+    }
     const props: Record<string, string[]> = {};
     if (ab.length) props.AB = ab;
     if (aw.length) props.AW = aw;
@@ -960,16 +973,6 @@ export function useMoveNumber(): number {
 export function useBoardSize(): number {
   const tree = useStore((s) => s.tree);
   return propNum(tree, tree.root, 'SZ', 19);
-}
-
-export function currentSgf(): string {
-  const { tree, current } = useStore.getState();
-  return sgfFor(tree, current);
-}
-
-export function currentMainLineSgf(): string {
-  const { tree } = useStore.getState();
-  return serializeMainLineTo(tree, tree.root);
 }
 
 export function cloneCurrentTree(): GameTree {

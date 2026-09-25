@@ -15,3 +15,6 @@ models/**/saved_model/
 tools/shots/
 # tools/devtest.mjs 生成的验收实例外壳
 tools/devtest-app/
+
+# cv-check / 探针留下的临时文件
+tools/.tmp-*

@@ -1,11 +1,15 @@
 /**
- * 界面逻辑自测：内置浏览器的标签页规则，以及分栏尺寸的夹取。
- * 这两块出错不会崩，只会让界面别扭（关掉标签跳到别的页面、分隔条拖不动、
- * 某块窗口宽度下按钮被截断），所以边界都在这儿钉住。
+ * 界面逻辑自测：内置浏览器的标签页规则、分栏尺寸的夹取，以及送去引擎的 SGF 形态。
+ * 这几块出错不会崩，只会让界面别扭（关掉标签跳到别的页面、分隔条拖不动、
+ * 某块窗口宽度下按钮被截断），或者让引擎直接拒收整盘棋。
  * 由 tools/ui-logic-selftest.mjs 打包后运行。
  */
+import { BLACK, WHITE, type GameTree, type SgfProps } from '../src/shared/types';
 import { closeTab, makeTab, openTab, stepTab, tabTitle, type BrowserTab } from '../src/renderer/core/browser/tabs';
 import { normalizeUrl } from '../src/renderer/core/browser/url';
+import { engineSgfFor } from '../src/renderer/core/sgf/engineSgf';
+import { parseSgf } from '../src/renderer/core/sgf/parse';
+import { addChild, addMoveNode, colorToPlayAt, createTree, positionAt, setProp } from '../src/renderer/core/sgf/tree';
 import {
   DEFAULT_LEFT,
   DEFAULT_RIGHT,
@@ -109,6 +113,164 @@ section('地址栏：输入理解');
   eq(normalizeUrl('localhost:5199'), 'http://localhost:5199', 'localhost 加端口');
   eq(normalizeUrl('围棋 定式'), 'https://www.bing.com/search?q=' + encodeURIComponent('围棋 定式'), '不像地址就当搜索词');
   eq(normalizeUrl(''), '', '空输入不跳转');
+}
+
+section('引擎局面：摆子收进根节点');
+{
+  // KataGo 的 loadsgf 只认根节点上的摆子，第二个节点往后出现 AB/AW/AE 就整谱拒收：
+  // "Found stone placements after the root"。摆子工具和"导入到当前棋谱"都会写出这种局面，
+  // 所以这一段钉住送进引擎的那份 SGF。真引擎那边由 tools/engine-sgf-check.mjs 复核。
+  const nodesOf = (sgf: string): GameTree => parseSgf(sgf)[0];
+  const countOf = (sgf: string): number => Object.keys(nodesOf(sgf).nodes).length;
+  const rootOf = (sgf: string): SgfProps => nodesOf(sgf).nodes[nodesOf(sgf).root].props;
+  const lineEnd = (tree: GameTree): number => {
+    let cur = tree.root;
+    for (;;) {
+      const next = tree.nodes[cur]?.children ?? [];
+      if (next.length === 0) return cur;
+      cur = next[0];
+    }
+  };
+  const boardOf = (tree: GameTree, id: number): string => Array.from(positionAt(tree, id).cells).join(',');
+  const setupAfterRoot = (sgf: string): number => {
+    const t = nodesOf(sgf);
+    let n = 0;
+    for (const k of Object.keys(t.nodes)) {
+      if (Number(k) === t.root) continue;
+      const p = t.nodes[Number(k)].props;
+      for (const key of ['AB', 'AW', 'AE']) n += (p[key] ?? []).length;
+    }
+    return n;
+  };
+  const turnOf = (tree: GameTree, id: number): 'B' | 'W' => (colorToPlayAt(tree, id) === BLACK ? 'B' : 'W');
+  const forEngine = (tree: GameTree, id: number): string => engineSgfFor(tree, id, turnOf(tree, id)).sgf;
+  const blank = (): GameTree => createTree(19, 7.5, 0, 'Chinese');
+
+  // 一、摆子落在根节点：空谱上直接用摆子工具，或者导入时选"新建棋谱"
+  {
+    const withAb = setProp(blank(), 1, 'AB', ['dd']);
+    const t = setProp(withAb, 1, 'AW', ['pp']);
+    const out = forEngine(t, 1);
+    eq(countOf(out), 1, '只有一个节点');
+    eq(setupAfterRoot(out), 0, '根节点之外没有摆子');
+    eq((rootOf(out).AB ?? []).join(''), 'dd', '黑子还在根节点');
+    eq((rootOf(out).AW ?? []).join(''), 'pp', '白子还在根节点');
+    eq((rootOf(out).PL ?? [])[0], 'B', '轮次写在根节点上：只有摆子时 KataGo 默认算白走，不写就反了');
+    eq(boardOf(nodesOf(out), 1), boardOf(t, 1), '盘面一致');
+  }
+
+  // 二、用户遇到的那个局面：图导进来落在第二个节点上
+  {
+    const first = addChild(blank(), 1, { AB: ['dd'], AW: ['pp'] });
+    const t = first.tree;
+    const out = engineSgfFor(t, first.id, turnOf(t, first.id));
+    eq(out.positionOnly, false, '能收拢就不退化成纯局面');
+    eq(setupAfterRoot(out.sgf), 0, '第二节点上的摆子被收进根节点');
+    eq((rootOf(out.sgf).AB ?? []).join(''), 'dd', '黑子挪到了根节点');
+    eq((rootOf(out.sgf).AW ?? []).join(''), 'pp', '白子挪到了根节点');
+    eq(countOf(out.sgf), 1, '只剩根节点：那个节点本来就只装了摆子');
+    eq(boardOf(nodesOf(out.sgf), lineEnd(nodesOf(out.sgf))), boardOf(t, first.id), '收拢后盘面没变');
+  }
+
+  // 三、手数之后摆子（摆子工具停在某一手后面接着摆）
+  {
+    const m1 = addMoveNode(blank(), 1, BLACK, 3 * 19 + 3);
+    const m2 = addMoveNode(m1.tree, m1.id, WHITE, 15 * 19 + 15);
+    const setup = addChild(m2.tree, m2.id, { AB: ['qq'], AW: ['cc'] });
+    const t = setup.tree;
+    const out = forEngine(t, setup.id);
+    eq(setupAfterRoot(out), 0, '摆子收进根节点');
+    eq(countOf(out), 3, '两手棋还在');
+    ok(out.includes('B[dd]') && out.includes('W[pp]'), '手数原样保留');
+    eq(boardOf(nodesOf(out), lineEnd(nodesOf(out))), boardOf(t, setup.id), '盘面一致');
+    eq((rootOf(out).PL ?? [])[0], 'B', '最后一手是白，轮到黑');
+  }
+
+  // 四、摆子和手数写在同一个节点上
+  {
+    const m1 = addMoveNode(blank(), 1, BLACK, 3 * 19 + 3);
+    const t = setProp(m1.tree, m1.id, 'AW', ['pp']);
+    const out = forEngine(t, m1.id);
+    eq(setupAfterRoot(out), 0, '摆子收进根节点');
+    eq(countOf(out), 2, '那个节点留下了，因为上面还有一手棋');
+    ok(out.includes('B[dd]'), '同一节点上的手数没被丢掉');
+    eq(boardOf(nodesOf(out), lineEnd(nodesOf(out))), boardOf(t, m1.id), '盘面一致');
+  }
+
+  // 五、两个节点摆同一个点，后摆的赢
+  {
+    const first = setProp(blank(), 1, 'AB', ['dd']);
+    const second = addChild(first, 1, { AW: ['dd'] });
+    const t = second.tree;
+    const out = forEngine(t, second.id);
+    eq((rootOf(out).AW ?? []).join(''), 'dd', '后摆的白子留下');
+    eq((rootOf(out).AB ?? []).length, 0, '先摆的黑子被顶掉，两个列表里不能同时出现同一个点');
+    eq(boardOf(nodesOf(out), lineEnd(nodesOf(out))), boardOf(t, second.id), '盘面一致');
+  }
+
+  // 六、AE 提掉的是前面某一手下的子：收不进根节点，只能退成纯局面
+  {
+    const m1 = addMoveNode(blank(), 1, BLACK, 3 * 19 + 3);
+    const clear = addChild(m1.tree, m1.id, { AE: ['dd'] });
+    const t = clear.tree;
+    const out = engineSgfFor(t, clear.id, turnOf(t, clear.id));
+    eq(out.positionOnly, true, '收不干净就发纯局面，而不是发一份盘面对不上的 SGF');
+    eq(countOf(out.sgf), 1, '纯局面只有根节点');
+    eq(setupAfterRoot(out.sgf), 0, '根节点之外没有摆子');
+    eq((rootOf(out.sgf).AB ?? []).length, 0, '那一手被提掉了，根节点里不该再有这颗黑子');
+    eq(boardOf(nodesOf(out.sgf), lineEnd(nodesOf(out.sgf))), boardOf(t, clear.id), '盘面一致');
+  }
+
+  // 七、根节点上 AB 和 AE 写着同一个点：KataGo 见到这种写法会当成非法盘面拒收
+  {
+    const withAb = setProp(blank(), 1, 'AB', ['dd']);
+    const t = setProp(withAb, 1, 'AE', ['dd']);
+    const out = forEngine(t, 1);
+    eq((rootOf(out).AB ?? []).length, 0, 'AE 说清空，AB 里就不该还留着这个点');
+    eq(boardOf(nodesOf(out), lineEnd(nodesOf(out))), boardOf(t, 1), '盘面一致');
+  }
+
+  // 八、让子谱：界面按惯例算白走，引擎那边也得是白走
+  {
+    const t = createTree(19, 0.5, 2, 'Chinese');
+    const out = forEngine(t, t.root);
+    eq(turnOf(t, t.root), 'W', '让子局面轮白');
+    eq((rootOf(out).PL ?? [])[0], 'W', '引擎那份也写白：KataGo 对着根节点摆子会按让子惯例算白走，写死更稳');
+    eq(boardOf(nodesOf(out), lineEnd(nodesOf(out))), boardOf(t, t.root), '盘面一致');
+  }
+
+  // 九、普通对局照旧：不收拢、不退化，只补一句轮次
+  {
+    let t = blank();
+    let id = t.root;
+    for (const [color, point] of [
+      [BLACK, 3 * 19 + 15],
+      [WHITE, 15 * 19 + 3],
+      [BLACK, 15 * 19 + 15],
+      [WHITE, 3 * 19 + 3],
+      [BLACK, 15 * 19 + 6]
+    ] as Array<[1 | 2, number]>) {
+      const r = addMoveNode(t, id, color, point);
+      t = r.tree;
+      id = r.id;
+    }
+    const out = engineSgfFor(t, id, turnOf(t, id));
+    eq(out.positionOnly, false, '普通对局不做任何转换');
+    eq(countOf(out.sgf), 6, '六个节点：根加五手');
+    eq(setupAfterRoot(out.sgf), 0, '没有摆子');
+    eq((rootOf(out.sgf).PL ?? [])[0], 'W', '最后一手是黑，轮到白');
+    eq((out.sgf.match(/\(/g) ?? []).length, 1, '只有一条主线，变着不进引擎');
+  }
+
+  // 十、变着不进引擎
+  {
+    const m1 = addMoveNode(blank(), 1, BLACK, 3 * 19 + 3);
+    const main = addMoveNode(m1.tree, m1.id, WHITE, 15 * 19 + 15);
+    const branch = addMoveNode(main.tree, m1.id, WHITE, 15 * 19 + 3, { mainLine: false });
+    const out = forEngine(branch.tree, branch.id);
+    eq(countOf(out), 3, '只走当前这条线');
+    eq((out.match(/\(/g) ?? []).length, 1, '没有变着括号');
+  }
 }
 
 section('分栏：侧栏宽度夹取');
