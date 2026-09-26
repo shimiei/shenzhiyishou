@@ -113,8 +113,11 @@ const main = async () => {
     }
   }
 
-  console.log('\n准备：分屏、打开假网页板、两边都清到空盘');
+  console.log('\n准备：把窗口摆出来、分屏、打开假网页板、两边都清到空盘');
   {
+    // 窗口被最小化时截网页会一直不返回，先把它恢复出来并摆成默认大小
+    console.log('  ' + resize(1500, 940));
+    await sleep(600);
     await app.evalIn(`return Boolean(window.api) && Boolean(document.querySelector('.toolbar'))`);
     // 分屏那一栏由 browserOpen 决定挂不挂，直接改状态比点按钮稳
     await app.evalIn(`
@@ -186,14 +189,16 @@ const main = async () => {
       }
       if (st && st.size === 19 && st.stones.length === 0) break;
     }
-    // 本地也退到空盘
-    for (let i = 0; i < 60; i++) {
-      if ((await app.evalIn(`return document.querySelectorAll('.tree-row').length`)) <= 1) break;
-      await app.evalIn(clickBtn('撤销'));
-      await sleep(120);
-    }
     check('假网页板就绪（19 路空盘）', Boolean(st) && st.size === 19 && st.stones.length === 0, JSON.stringify(st));
-    check('本地也退到空盘（只剩根节点）', (await app.evalIn(`return document.querySelectorAll('.tree-row').length`)) === 1);
+    // 本地这一盘要一块干净的空盘：新开一个标签，比在一盘来路不明的棋上一直撤销可靠
+    // （摆子的局面撤销是撤不掉那几颗子的，装过棋谱的配置里就会碰上）
+    await app.evalIn(clickBtn('新建标签'));
+    await sleep(700);
+    check(
+      '新建的这一盘是空盘（只剩根节点）',
+      (await app.evalIn(`return document.querySelectorAll('.tree-row').length`)) === 1,
+      String(await app.evalIn(`return document.querySelectorAll('.tree-row').length`))
+    );
     globalThis.page = page;
   }
 
