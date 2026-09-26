@@ -17,6 +17,8 @@ export interface RecognizeOptions {
   expectedSize?: number;
   /** 用户手动框选的棋盘区域，坐标以原图像素为单位。 */
   crop?: ImageBox | null;
+  /** 认出一块空盘也算成功（实时截取开局时要用），默认不算。 */
+  allowEmpty?: boolean;
 }
 
 export interface GridFit {
@@ -673,7 +675,9 @@ export function recognizeBoard(img: ImageData, opts: RecognizeOptions = {}): Rec
   const confidence = Math.max(0, Math.min(1, 1 - suspects.length / Math.max(1, total)) * Math.min(1, grid.uniformity + 0.1));
 
   return {
-    ok: stoneCount > 0,
+    // 空盘算不算认成功，看调用方：手动导入时一颗子都没有多半是截错了图，要拦；
+    // 实时截取时开局的空盘就是正常画面，不能报错。
+    ok: stoneCount > 0 || opts.allowEmpty === true,
     size: grid.size,
     stones,
     confidence,

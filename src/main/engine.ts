@@ -117,6 +117,16 @@ export class EngineManager {
   private tempSgf = '';
   private settings: Partial<AppSettings> = {};
   private starting: Promise<EngineStatus> | null = null;
+  /**
+   * 两个进程各自现在真正跑的是哪套配置。
+   *
+   * 光看 settings.modelId 不够：用户改了设置不等于引擎换了网络。GtpEngine.start()
+   * 在进程还活着的时候是直接返回的（它只负责"把进程拉起来"），照这个语义去点
+   * "用选中的网络重启引擎"，换来的只是状态栏上换了个名字，跑的还是老网络。
+   * 要换网络就得先真把旧的停掉，这里记下停之前用的是谁，才好判断该不该停。
+   */
+  private playTarget: { modelFile: string; backend: BackendName } | null = null;
+  private analyzeTarget: { modelFile: string; backend: BackendName } | null = null;
 
   init(deps: EngineDeps): void {
     this.emit = deps.emit;
@@ -218,6 +228,28 @@ export class EngineManager {
     const humanId = (this.settings as Record<string, unknown>).humanModelId;
     const humanFile = typeof humanId === 'string' ? modelPath(humanId) ?? undefined : undefined;
 
+    /*
+     * 换了网络或后端就得先停掉旧的。不停的话 playEngine.start() 会因为"进程还在"
+     * 直接返回成功，状态里写上新网络的名字，跑着的还是老的，用户看着像切了其实没切。
+     */
+    const running = this.playTarget;
+    if (this.playEngine.running && running && (running.modelFile !== modelFile || running.backend !== backend)) {
+      this.emit({
+        type: 'log',
+        text: `[启动] 换到 ${path.basename(modelFile)}，先把正在跑的那个停掉。`
+      });
+      this.stopAnalysis();
+      await this.playEngine.quit();
+      this.playTarget = null;
+      this.synced.clear();
+    }
+    // 分析引擎跟着换：它自己拿的是启动时的网络，换了主网络却不换它，
+    // 面板上写着新网络，分析出来的还是旧网络的结论。
+    if (this.analyzeEngine.running && this.analyzeTarget && (this.analyzeTarget.modelFile !== modelFile || this.analyzeTarget.backend !== backend)) {
+      await this.analyzeEngine.quit();
+      this.analyzeTarget = null;
+    }
+
     this.status = { ...this.status, starting: true, backend, modelFile, error: null };
     this.pushStatus();
     mkdirSync(logsDir(), { recursive: true });
@@ -248,6 +280,7 @@ export class EngineManager {
         name: name.trim(),
         error: null
       };
+      this.playTarget = { modelFile, backend };
       this.synced.clear();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -260,6 +293,8 @@ export class EngineManager {
   async stop(): Promise<void> {
     await this.playEngine.quit();
     await this.analyzeEngine.quit();
+    this.playTarget = null;
+    this.analyzeTarget = null;
     this.status = { ...this.status, running: false, ready: false };
     this.synced.clear();
     this.pushStatus();
@@ -270,26 +305,51 @@ export class EngineManager {
   }
 
   private async ensureAnalyze(): Promise<GtpEngine> {
-    if (this.analyzeEngine.running) return this.analyzeEngine;
     const backend = this.status.backend ?? availableBackends()[0] ?? 'opencl';
     const modelId = this.settings.modelId ?? 'b6c96';
     const modelFile = modelPath(modelId) ?? modelPath('b6c96');
     if (!modelFile) throw new Error('没有可用的网络文件');
+    if (this.analyzeEngine.running) {
+      // 网络或后端换过了就把分析引擎重建，否则它会拿着老网络一直算下去
+      const t = this.analyzeTarget;
+      if (!t || (t.modelFile === modelFile && t.backend === backend)) return this.analyzeEngine;
+      await this.analyzeEngine.quit();
+      this.analyzeTarget = null;
+      this.synced.delete(this.analyzeEngine);
+    }
     this.status = { ...this.status, backend };
     const args = this.buildArgs(modelFile, { maxVisits: this.settings.analyzeVisits ?? 300 });
+    /*
+     * 这一次要等十几秒（要起进程、建 OpenCL 上下文、把网络读进来）。
+     * 界面上"点了实时分析却什么都不动"多半就是这个等待，所以先说一声再等。
+     */
+    this.emit({
+      type: 'log',
+      text: `[分析] 正在启动分析引擎（网络 ${path.basename(modelFile)}，核显上通常十几秒）…`
+    });
     await this.analyzeEngine.start(katagoBinary(backend), args, backendDir(backend));
+    this.analyzeTarget = { modelFile, backend };
     return this.analyzeEngine;
   }
 
   /** 应用运行时参数。 */
   async applyParams(patch: Partial<AppSettings>): Promise<void> {
     this.setSettings(patch);
-    const sets: Array<[string, string | number]> = [];
-    if (patch.analyzeVisits !== undefined) sets.push(['maxVisits', patch.analyzeVisits]);
-    if (patch.threads !== undefined) sets.push(['numSearchThreads', patch.threads]);
-    for (const [key, value] of sets) {
+    const sets: Array<[string, string | number, string]> = [];
+    if (patch.analyzeVisits !== undefined) sets.push(['maxVisits', patch.analyzeVisits, '下一次分析开始时生效']);
+    if (patch.threads !== undefined) sets.push(['numSearchThreads', patch.threads, '重启引擎后生效']);
+    for (const [key, value, note] of sets) {
       for (const engine of [this.playEngine, this.analyzeEngine]) {
         if (!engine.running) continue;
+        /*
+         * 分析是流式命令，占着队首一直不结束，这时候 send 进去的 kata-set-param
+         * 排在它后面，永远轮不上（超时也不会触发，计时器要等到成为当前任务才开始走）。
+         * 落子和分析在开始前都会重发自己那几个参数，所以这里忙就跳过，别往队列里塞死信。
+         */
+        if (engine.busy) {
+          this.emit({ type: 'log', text: `[参数] ${key}=${value} 现在正忙，${note}` });
+          continue;
+        }
         await engine.send(`kata-set-param ${key} ${value}`, 15000).catch(() => undefined);
       }
     }
@@ -445,6 +505,7 @@ export class EngineManager {
     const suffix = req.ownership ? ' ownership true' : '';
     let current = new Map<string, AnalysisMove>();
     let emitted = 0;
+    let lastKey = '';
     // 只在排查模式下把引擎原始输出透到界面日志，平时一条都不多打
     const debug = process.env.SZYS_GTP_LOG === '1';
     let rawLines = 0;
@@ -452,6 +513,14 @@ export class EngineManager {
       if (current.size === 0) return;
       const list = [...current.values()].sort((a, b) => b.visits - a.visits);
       const top = list[0];
+      /*
+       * 引擎会把同一个结果连着报好几次（带着 ownership 的那些行尤其明显，实测一条结果
+       * 能报三遍），一模一样的东西不必反复推给界面：每推一次界面就重画一遍棋盘。
+       * 只在"最高候选或访问量真的变了"时才发。
+       */
+      const key = `${top.move}|${top.visits}|${list.length}`;
+      if (key === lastKey) return;
+      lastKey = key;
       if (debug) {
         this.emit({
           type: 'log',

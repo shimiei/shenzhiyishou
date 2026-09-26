@@ -19,20 +19,29 @@
   <div class="meta">黑：测试棋手（9d）　白：对手（9d）　时限：各 30 分钟　贴目 7.5</div>
   <div class="board" id="boardBox"><canvas id="board" width="640" height="640"></canvas></div>
   <div class="side">
-    <span class="pill">手数 24</span><span class="pill">黑 12 子</span><span class="pill">白 12 子</span>
+    <span class="pill" id="pillMoves">手数 24</span><span class="pill" id="pillBlack">黑 12 子</span><span class="pill" id="pillWhite">白 12 子</span><span class="pill" id="pillTurn">黑方行棋</span>
+    <button id="oppBtn" style="margin-left:6px">对手走一手</button>
+    <div id="log" style="margin-top:6px;color:#778"></div>
   </div>
 </div>
 <script>
-  // 一条固定不变的测试局面：谁被改了都跑不过比对
-  const BLACK = ['D4', 'Q4', 'D16', 'Q16', 'K10', 'C10', 'R10', 'Q10', 'D10', 'F5', 'Q14', 'D14'];
-  const WHITE = ['C6', 'R6', 'C14', 'R14', 'Q5', 'D5', 'K16', 'K4', 'F17', 'C3', 'R17', 'Q12'];
+  // 一条固定不变的测试局面：谁被改了都跑不过比对。
+  // ?start=empty 从空盘开局，验收实时截取时用：本地开一盘空的，两边同一出发点。
+  const QS = new URLSearchParams(location.search);
+  const START_EMPTY = QS.get('start') === 'empty';
+  const BLACK = START_EMPTY ? [] : ['D4', 'Q4', 'D16', 'Q16', 'K10', 'C10', 'R10', 'Q10', 'D10', 'F5', 'Q14', 'D14'];
+  const WHITE = START_EMPTY ? [] : ['C6', 'R6', 'C14', 'R14', 'Q5', 'D5', 'K16', 'K4', 'F17', 'C3', 'R17', 'Q12'];
   const LETTERS = 'ABCDEFGHJKLMNOPQRSTUVWXYZ';
   const SIZE = 19;
   // 棋盘跟着窗口宽度走：真实的对局站也是这样，分屏窄的时候会自动缩小。
   // ?px= 可以钉死尺寸：分屏矮的时候要靠它把整块棋盘塞进截图里，识别只认整块的棋盘。
-  const FIXED_PX = Number(new URLSearchParams(location.search).get('px')) || 0;
+  const FIXED_PX = Number(QS.get('px')) || 0;
+  // 宽和高都要看：分屏可能是又宽又矮的一条，只看宽度会把棋盘画到画面外面去，
+  // 而识别要求整块棋盘都在截图里。
   const measure = () =>
-    FIXED_PX ? Math.max(140, Math.min(640, FIXED_PX)) : Math.max(260, Math.min(640, window.innerWidth - 26));
+    FIXED_PX
+      ? Math.max(140, Math.min(640, FIXED_PX))
+      : Math.max(160, Math.min(640, window.innerWidth - 26, window.innerHeight - 26));
   let PX = measure();
   const MARGIN = () => PX * 0.072;
   const step = () => (PX - MARGIN() * 2) / (SIZE - 1);
@@ -48,7 +57,7 @@
   // 默认是本机页面那种深色格线、白子最亮处接近纯白的画法；
   // ?style=yike 是另一种客户端的样子：亮橙木色配蓝格线，白子是带明暗的灰球面，
   // 整圈取样的亮度跟木色差不多甚至更低，格线还画在棋子上层。识别就是在这一种上翻过车。
-  const STYLE = new URLSearchParams(location.search).get('style') === 'yike' ? 'yike' : 'default';
+  const STYLE = QS.get('style') === 'yike' ? 'yike' : 'default';
   const PAL = STYLE === 'yike'
     ? {
         wood: ['#fed57b', '#febd73', '#f2ab63'],
@@ -127,8 +136,122 @@
     box.style.background = '#febd73';
     box.style.borderColor = '#e0a253';
   }
-  draw();
-  window.addEventListener('resize', draw);
+  // ?bare=1 只留棋盘：验收实时截取时用，分屏那块本来就不大，页面上的标题和比分
+  // 会把棋盘挤小，而识别只认整块的棋盘。
+  if (QS.get('bare') === '1') {
+    document.querySelector('h1').style.display = 'none';
+    document.querySelector('.meta').style.display = 'none';
+    document.querySelector('.side').style.display = 'none';
+    document.querySelector('.wrap').style.padding = '0';
+  }
+
+  // ---- 交互部分：给自动落子与实时截取做验收 ----
+  // 盘面从上面那两条固定棋谱起步，之后再落的子都记在这张表里：
+  // 点哪落哪（轮到谁就落谁的），谁都点不了的地方不落，模拟真实站点对非法着法的拒绝。
+  const board = new Map();
+  BLACK.forEach((v) => board.set(v, 'b'));
+  WHITE.forEach((v) => board.set(v, 'w'));
+  let toMove = 'b';
+  let moveNo = START_EMPTY ? 0 : 24;
+  const clicks = [];
+  const logs = [];
+  function drawAll() {
+    draw();  // 底图 + 初始固定棋谱
+    const sp = step();
+    const R = sp * (STYLE === 'yike' ? 0.46 : 0.47);
+    function stoneAt([x, y], color) {
+      const g = ctx.createRadialGradient(x - R * 0.35, y - R * 0.4, R * 0.15, x, y, R);
+      const stops = color === 'b' ? PAL.black : PAL.white;
+      for (let i = 0; i < stops.length; i += 2) g.addColorStop(stops[i], stops[i + 1]);
+      ctx.beginPath();
+      ctx.arc(x, y, R, 0, Math.PI * 2);
+      ctx.fillStyle = g;
+      ctx.fill();
+      ctx.strokeStyle = color === 'b' ? PAL.outline.b : PAL.outline.w;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    for (const [v, c] of board) {
+      if (BLACK.includes(v) || WHITE.includes(v)) continue;  // 初始的那些上面已经画了
+      stoneAt(pointOf(v), c);
+    }
+    if (lastMove) {
+      // 最后一手的红点，跟真站点一样：识别要能透过这个点认出棋子
+      const [ix, iy] = pointOf(lastMove);
+      ctx.beginPath();
+      ctx.arc(ix, iy, Math.max(2, R * 0.22), 0, Math.PI * 2);
+      ctx.fillStyle = '#e0453a';
+      ctx.fill();
+    }
+    document.getElementById('pillMoves').textContent = '手数 ' + moveNo;
+    document.getElementById('pillBlack').textContent = '黑 ' + [...board.values()].filter((c) => c === 'b').length + ' 子';
+    document.getElementById('pillWhite').textContent = '白 ' + [...board.values()].filter((c) => c === 'w').length + ' 子';
+    document.getElementById('pillTurn').textContent = toMove === 'b' ? '黑方行棋' : '白方行棋';
+  }
+  function pointOf(v) {
+    const x = LETTERS.indexOf(v[0].toUpperCase());
+    const y = SIZE - parseInt(v.slice(1), 10);
+    return [MARGIN() + x * step(), MARGIN() + y * step()];
+  }
+  function vertexAt(px, py) {
+    const M = MARGIN();
+    const sp = step();
+    const x = Math.round((px - M) / sp);
+    const y = Math.round((py - M) / sp);
+    if (x < 0 || y < 0 || x >= SIZE || y >= SIZE) return null;
+    // 离交叉点太远的点击不算落子：真站点也是这样，点到棋盘的空白处什么都不发生
+    if (Math.hypot(px - (M + x * sp), py - (M + y * sp)) > sp * 0.7) return null;
+    return LETTERS[x] + (SIZE - y);
+  }
+  let lastMove = null;
+  function play(v, color) {
+    if (!v || board.has(v)) return false;
+    board.set(v, color);
+    lastMove = v;
+    moveNo += 1;
+    toMove = color === 'b' ? 'w' : 'b';
+    logs.push(`${moveNo}. ${color === 'b' ? '黑' : '白'} ${v}`);
+    document.getElementById('log').textContent = logs.slice(-3).join('　');
+    drawAll();
+    return true;
+  }
+  cv.addEventListener('click', (e) => {
+    const r = cv.getBoundingClientRect();
+    const px = e.clientX - r.left;
+    const py = e.clientY - r.top;
+    const v = vertexAt(px, py);
+    clicks.push({ px, py, vertex: v, color: toMove, at: Date.now() });
+    play(v, toMove);
+  });
+  // 对手自动走一手（验收时用 CDP 调，或者直接点按钮）
+  window.__opponentMove = (v) => {
+    if (v) return play(v, toMove);
+    const empty = [];
+    for (let x = 2; x < SIZE - 2; x++) {
+      for (let y = 2; y < SIZE - 2; y++) {
+        const cand = LETTERS[x] + (SIZE - y);
+        if (!board.has(cand)) empty.push(cand);
+      }
+    }
+    // 挑靠近中心的一个空点，别乱丢在边上
+    empty.sort((a, b) => {
+      const d = (v) => Math.abs(LETTERS.indexOf(v[0]) - 9) + Math.abs(SIZE - parseInt(v.slice(1), 10) - 9);
+      return d(a) - d(b);
+    });
+    return play(empty[Math.min(empty.length - 1, Math.floor(empty.length * 0.3))], toMove);
+  };
+  window.__state = () => ({
+    size: SIZE,
+    toMove,
+    moveNo,
+    lastMove,
+    clicks: clicks.slice(),
+    stones: [...board.entries()].map(([v, c]) => ({ v, c }))
+  });
+  document.getElementById('oppBtn').addEventListener('click', () => window.__opponentMove());
+
+  drawAll();
+  window.addEventListener('resize', drawAll);
 
   // 供比对用：坐标与索引
   window.__expected = {

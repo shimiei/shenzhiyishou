@@ -122,6 +122,9 @@ export function BrowserPanel({
   const activateTab = useStore((s) => s.activateTab);
   const toast = useStore((s) => s.toast);
   const settings = useStore((s) => s.settings);
+  const sync = useStore((s) => s.sync);
+  const setLiveCapture = useStore((s) => s.setLiveCapture);
+  const setAutoPlay = useStore((s) => s.setAutoPlay);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0] ?? null;
   const activeId = activeTab?.id ?? null;
@@ -282,12 +285,28 @@ export function BrowserPanel({
         </button>
       </div>
       <div className="row wrap browser-presets" style={{ padding: '6px 8px 0', gap: 6 }}>
+        <button
+          className={'chip' + (settings.liveCapture ? ' active' : '')}
+          title="每隔两三秒看一眼网页上的棋盘，网页上多出来的那一手会自动接到谱上；对不上的时候只提示，不动你的棋"
+          onClick={() => void setLiveCapture(!settings.liveCapture)}
+        >
+          实时截取
+        </button>
+        <button
+          className={'chip' + (settings.autoPlay ? ' active' : '')}
+          title="本程序里落的子会点回网页棋盘上（点之前先核对两边局面，点完再截一次确认；没落上会自动关掉）"
+          onClick={() => void setAutoPlay(!settings.autoPlay)}
+        >
+          自动落子
+        </button>
+        <span className="tb-sep" />
         {PRESETS.map((p) => (
           <button key={p.label} className="chip" onClick={() => go(p.url)}>
             {p.label}
           </button>
         ))}
         <span className="small faint" style={{ marginLeft: 'auto' }}>
+          {sync ? <span className={sync.ok ? 'sync-msg ok' : 'sync-msg err'}>{sync.text}</span> : null}
           {current?.error ? current.error : current?.loading ? '加载中…' : activeTab?.url && activeTab.url !== 'about:blank' ? activeTab.url.slice(0, 64) : '未打开页面'}
         </span>
       </div>

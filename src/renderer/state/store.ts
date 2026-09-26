@@ -39,6 +39,9 @@ import { engineSgfFor } from '../core/sgf/engineSgf';
 import { parseSgf } from '../core/sgf/parse';
 import { Position } from '../core/go/position';
 import { closeTab, makeTab, openTab, stepTab, type BrowserTab } from '../core/browser/tabs';
+import { expectStone, isPassPoint, planMirror, pointToPage } from '../core/browser/mirror';
+import { imageDataFromUrl } from '../core/cv/image';
+import { recognizeBoard, type GridFit, type ImageBox } from '../core/cv/recognize';
 import {
   DEFAULT_LEFT,
   DEFAULT_RIGHT,
@@ -108,6 +111,8 @@ interface AppStore {
   engineStatus: EngineStatus;
   analysis: AnalysisSnapshot | null;
   analyzing: boolean;
+  /** 分析引擎正在起步（拉起进程、换网络都要十几秒）。界面靠它显示"启动中"。 */
+  analyzeStarting: boolean;
   thinking: boolean;
   /** 手里这条推荐，带颜色。盘面一变就作废，不会留在旧局面的点上。 */
   hint: Advice | null;
@@ -134,6 +139,9 @@ interface AppStore {
   zoom: number;
   toasts: Toast[];
 
+  /** 实时截取与自动落子的最后一条状态，显示在浏览器栏上。 */
+  sync: { text: string; at: number; ok: boolean } | null;
+
   // 动作
   boot: () => Promise<void>;
   setSettings: (patch: Partial<AppSettings>) => Promise<void>;
@@ -150,7 +158,7 @@ interface AppStore {
   gotoEnd: () => void;
 
   play: (point: number) => void;
-  playColor: (color: 1 | 2, point: number) => void;
+  playColor: (color: 1 | 2, point: number, from?: 'local' | 'remote') => void;
   pass: () => void;
   playAiMove: (force?: boolean) => Promise<string | null>;
   maybeAiTurn: () => Promise<void>;
@@ -202,6 +210,14 @@ interface AppStore {
   setZoom: (v: number) => void;
   setDeadStones: (v: number[]) => void;
   setFinished: (v: string | null) => void;
+  /** 实时截取开关：开着的时候每隔几秒截一次网页，把网页上多出来的那一手接到谱上。 */
+  setLiveCapture: (v: boolean) => Promise<void>;
+  /** 自动落子开关：本程序里落的子，同步点到网页棋盘上。 */
+  setAutoPlay: (v: boolean) => Promise<void>;
+  /** 实时截取的一拍：截图、识别、跟本地局面比，刚好差一手就接上。定时器在 App 里。 */
+  pollBrowser: () => Promise<void>;
+  /** 把一手棋点到网页棋盘上，点完再截一次核对。parentId 是这一手接在哪个节点后面。 */
+  forwardMoveToBrowser: (point: number, color: 1 | 2, parentId: number) => Promise<boolean>;
 }
 
 const emptyStatus: EngineStatus = {
@@ -275,6 +291,7 @@ export const useStore = create<AppStore>((set, get) => ({
   engineStatus: emptyStatus,
   analysis: null,
   analyzing: false,
+  analyzeStarting: false,
   thinking: false,
   hint: null,
   engineLogs: [],
@@ -296,6 +313,7 @@ export const useStore = create<AppStore>((set, get) => ({
   zoom: 1,
   showOwnership: false,
   toasts: [],
+  sync: null,
 
   async boot() {
     const [settings, info] = await Promise.all([window.api.settings.get(), window.api.app.info()]);
@@ -500,7 +518,7 @@ export const useStore = create<AppStore>((set, get) => ({
     get().playColor(color, point);
   },
 
-  playColor(color, point) {
+  playColor(color, point, from = 'local') {
     const { tree, current, finished } = get();
     if (finished) return;
     const pos = positionAt(tree, current);
@@ -514,6 +532,9 @@ export const useStore = create<AppStore>((set, get) => ({
     const res = addMoveNode(tree, current, color, point, { mainLine: true });
     get().commit(res.tree, res.id);
     get().setAnalysis(null);
+    // 只有本程序里落的子才往网页上点。实时截取接回来的那一手是从网页上读来的，
+    // 再点回去等于自己跟自己下。
+    if (from === 'local') void get().forwardMoveToBrowser(point, color, current);
     void get().maybeAiTurn();
   },
 
@@ -566,6 +587,7 @@ export const useStore = create<AppStore>((set, get) => ({
       const point = Position.parseVertex(res.move, size);
       const r2 = addMoveNode(get().tree, get().current, color, point, { mainLine: true });
       get().commit(r2.tree, r2.id);
+      void get().forwardMoveToBrowser(point, color, nodeAtRequest);
       if (get().game.mode === 'ai-vs-ai') setTimeout(() => void get().maybeAiTurn(), 400);
       return res.move;
     } catch (e) {
@@ -934,28 +956,35 @@ export const useStore = create<AppStore>((set, get) => ({
     const { tree, current, settings, analyzing } = get();
     if (analyzing && !force) return;
     const color = colorToPlayAt(tree, current);
-    if (!get().engineStatus.running) {
-      const st = await window.api.engine.start();
-      get().setEngineStatus(st);
-      if (!st.ready) {
-        get().toast(st.error ?? '引擎没有启动', 'error');
+    // 第一次分析要先把分析引擎拉起来：核显上开 OpenCL 上下文加大网络要十几秒，
+    // 这段时间界面上什么都不显示的话，用户只会觉得点下去卡死了。
+    set({ analyzeStarting: true });
+    try {
+      if (!get().engineStatus.running) {
+        const st = await window.api.engine.start();
+        get().setEngineStatus(st);
+        if (!st.ready) {
+          get().toast(st.error ?? '引擎没有启动', 'error');
+          return;
+        }
+      }
+      const res = await window.api.engine.analyzeStart({
+        sgf: sgfFor(tree, current),
+        visits: settings.analyzeVisits,
+        maxTimeMs: 0,
+        ownership: true,
+        lines: 8,
+        nodeId: current,
+        turn: color === BLACK ? 'B' : 'W'
+      });
+      if (!res.ok) {
+        get().toast('分析启动失败：' + (res.error ?? ''), 'error');
         return;
       }
+      set({ analyzing: true, analysis: null });
+    } finally {
+      set({ analyzeStarting: false });
     }
-    const res = await window.api.engine.analyzeStart({
-      sgf: sgfFor(tree, current),
-      visits: settings.analyzeVisits,
-      maxTimeMs: 0,
-      ownership: true,
-      lines: 8,
-      nodeId: current,
-      turn: color === BLACK ? 'B' : 'W'
-    });
-    if (!res.ok) {
-      get().toast('分析启动失败：' + (res.error ?? ''), 'error');
-      return;
-    }
-    set({ analyzing: true, analysis: null });
   },
 
   async stopAnalysis() {
@@ -1061,6 +1090,152 @@ export const useStore = create<AppStore>((set, get) => ({
 
   setFinished(v) {
     set({ finished: v });
+  },
+
+  async setLiveCapture(v) {
+    if (v && !get().browserOpen) {
+      // 没浏览器就没得截。用户点这个开关意思就是要用它，顺手把分屏打开。
+      get().setBrowserOpen(true);
+    }
+    await get().setSettings({ liveCapture: v });
+    set({ sync: null });
+    if (!v) {
+      get().toast('实时截取已关', 'info');
+      return;
+    }
+    get().toast('实时截取已开：网页上多出来的那一手会接到谱上', 'success');
+    void get().pollBrowser();
+  },
+
+  async setAutoPlay(v) {
+    await get().setSettings({ autoPlay: v });
+    if (v && !get().browserOpen) get().setBrowserOpen(true);
+    if (!v) {
+      get().toast('自动落子已关', 'info');
+      return;
+    }
+    get().toast('自动落子已开：本程序里落的子会点到网页棋盘上', 'success');
+    // 开的时候先试一次，认不出棋盘现在就告诉用户，别等到下了子才发现点不了
+    const shot = await shotPage();
+    if (typeof shot === 'string') {
+      setSync('自动落子：' + shot, false);
+      get().toast('自动落子开着，但网页棋盘还没认出来：' + shot, 'error');
+    } else {
+      setSync(`自动落子就绪（网页上是 ${shot.size} 路）`, true);
+    }
+  },
+
+  async pollBrowser() {
+    const st = get();
+    if (!st.settings.liveCapture || !st.browserOpen || st.finished) return;
+    // 引擎正在想棋、或者刚点出去一手还没落定，这两段时间里两边本来就对不齐
+    if (st.thinking || forwarding) return;
+    if (polling) return;
+    if (Date.now() - lastForwardAt < 2200) return;
+    polling = true;
+    try {
+      const shot = await shotPage();
+      if (typeof shot === 'string') {
+        setSync(shot, false);
+        return;
+      }
+      const now = get();
+      const size = propNum(now.tree, now.tree.root, 'SZ', 19);
+      if (shot.size !== size) {
+        setSync(`网页上是 ${shot.size} 路，这盘是 ${size} 路，对不上`, false);
+        return;
+      }
+      const cur = now.current;
+      const plan = planMirror(size, positionAt(now.tree, cur).cells, colorToPlayAt(now.tree, cur), shot.stones);
+      if (plan.kind === 'same') {
+        setSync('和网页一致', true);
+        return;
+      }
+      if (plan.kind === 'mismatch') {
+        setSync(`跟网页对不上：网页上多 ${plan.missing} 颗，本地多 ${plan.extra} 颗，先不动`, false);
+        return;
+      }
+      // 只接"刚好一手"，而且这个节点还没分叉才接：不然会凭空多出一条分支，
+      // 用户自己的棋谱树被搅乱了比少接一手麻烦得多。
+      if ((now.tree.nodes[cur]?.children.length ?? 0) > 0) {
+        setSync('网页上多了一手，但这里已经不止一种下法，没敢接', false);
+        return;
+      }
+      get().playColor(plan.color, plan.point, 'remote');
+      setSync(`接上网页的一手：${Position.gtpVertex(plan.point, size)}`, true);
+    } finally {
+      polling = false;
+    }
+  },
+
+  async forwardMoveToBrowser(point, color, parentId) {
+    const st = get();
+    if (!st.settings.autoPlay) return false;
+    if (!st.browserOpen) {
+      setSync('自动落子：内置浏览器关着', false);
+      return false;
+    }
+    if (isPassPoint(point)) {
+      setSync('自动落子：这一手是停一手，得在网页上自己点', false);
+      return false;
+    }
+    // 这一拍正在截就先等它截完，别把这次点击丢了
+    for (let i = 0; i < 20 && (polling || forwarding); i++) await sleep(50);
+    if (polling || forwarding) return false;
+    forwarding = true;
+    try {
+      const size = propNum(st.tree, st.tree.root, 'SZ', 19);
+      const before = await shotPage();
+      if (typeof before === 'string') {
+        setSync('自动落子：' + before, false);
+        return false;
+      }
+      if (before.size !== size) {
+        setSync(`自动落子：网页上是 ${before.size} 路，这盘是 ${size} 路`, false);
+        return false;
+      }
+      // 点之前先确认网页还停在"这一手之前"：两边对不上说明用户在网页上看的是
+      // 另一盘棋，这一下点下去就是往别人的棋盘上落子。
+      const plan = planMirror(size, positionAt(st.tree, parentId).cells, colorToPlayAt(st.tree, parentId), before.stones);
+      if (plan.kind !== 'same') {
+        setSync(
+          plan.kind === 'move'
+            ? `自动落子：网页上已经有 ${Position.gtpVertex(plan.point, size)} 这一手了`
+            : `自动落子：网页棋盘跟这盘对不上（网页上多 ${plan.missing} 颗，本地多 ${plan.extra} 颗），没点`,
+          false
+        );
+        return false;
+      }
+      const at = pointToPage(
+        before.grid,
+        point,
+        { width: before.viewWidth, height: before.viewHeight },
+        { width: before.imageWidth, height: before.imageHeight }
+      );
+      if (!at) {
+        setSync('自动落子：算不出这个交叉点在网页上的位置', false);
+        return false;
+      }
+      await withTimeout(window.api.browser.click(before.id, at.x, at.y), 3000, '点网页没回应');
+      lastForwardAt = Date.now();
+      // 点完再截一次核对。两次都对不上就把开关关掉：网页那头可能轮到对手走，
+      // 也可能页面换了、坐标算错了，继续点只会越点越歪。
+      for (let i = 0; i < 2; i++) {
+        await sleep(i === 0 ? 320 : 520);
+        const after = await shotPage();
+        if (typeof after === 'string') continue;
+        if (after.size === size && expectStone(size, after.stones, point, color)) {
+          setSync(`已点到网页上：${Position.gtpVertex(point, size)}`, true);
+          return true;
+        }
+      }
+      await get().setSettings({ autoPlay: false });
+      setSync('点了网页棋盘但没落上，自动落子已经关掉', false);
+      get().toast('这一手没点到网页上，自动落子已关掉：网页那头可能轮到对手走，或者棋盘位置变了', 'error');
+      return false;
+    } finally {
+      forwarding = false;
+    }
   }
 }));
 
@@ -1120,4 +1295,160 @@ export function activeWebContentsId(): number | null {
   const { tabs, activeTabId } = useStore.getState();
   const id = activeTabId && tabs.some((t) => t.id === activeTabId) ? activeTabId : tabs[0]?.id;
   return id ? webContentsIdOf(webviews.get(id)) : null;
+}
+
+/** 当前标签的 webview 节点。 */
+function activeWebviewEl(): HTMLElement | null {
+  const { tabs, activeTabId } = useStore.getState();
+  const id = activeTabId && tabs.some((t) => t.id === activeTabId) ? activeTabId : tabs[0]?.id;
+  return id ? webviews.get(id) ?? null : null;
+}
+
+function currentView(): { id: number; el: HTMLElement } | null {
+  const el = activeWebviewEl();
+  if (!el) return null;
+  const id = webContentsIdOf(el);
+  return id === null ? null : { id, el };
+}
+
+/**
+ * 网页视口的 CSS 像素大小。getBoundingClientRect 给的是它在页面上真正占的框，
+ * 显示器缩放和应用自己的缩放都已经算进去了，跟网页自己看到的 viewport 是一回事。
+ */
+function viewSizeOf(el: HTMLElement): { width: number; height: number } | null {
+  const r = el.getBoundingClientRect();
+  return r.width > 1 && r.height > 1 ? { width: r.width, height: r.height } : null;
+}
+
+/**
+ * 实时截取与自动落子共用的中间状态，放模块级不放 store：截一次要几百毫秒，
+ * 中间每写一次 store 就是一次全界面重画，而"正在截"本身不该出现在界面上。
+ */
+let polling = false;
+let forwarding = false;
+let lastForwardAt = 0;
+
+/**
+ * 上一次认出来的棋盘框，下次截图先照着它裁。网页四周的聊天栏、比分、按钮都在变，
+ * 裁到棋盘这一小块上稳得多也快得多。截图尺寸一变（窗口或分屏被拖动）就作废重认。
+ */
+let pageCrop: (ImageBox & { imageWidth: number; imageHeight: number }) | null = null;
+
+function cropFor(imageWidth: number, imageHeight: number): ImageBox | null {
+  const c = pageCrop;
+  if (!c) return null;
+  if (Math.abs(c.imageWidth - imageWidth) > 2 || Math.abs(c.imageHeight - imageHeight) > 2) return null;
+  return { x: c.x, y: c.y, w: c.w, h: c.h };
+}
+
+/** 记下这次认出来的棋盘框，往外扩一圈：棋盘最外圈那条线也框进来更稳。 */
+function rememberCrop(rect: ImageBox, imageWidth: number, imageHeight: number): void {
+  const padX = Math.round(rect.w * 0.06) + 2;
+  const padY = Math.round(rect.h * 0.06) + 2;
+  pageCrop = {
+    x: Math.max(0, rect.x - padX),
+    y: Math.max(0, rect.y - padY),
+    w: Math.min(imageWidth, rect.w + padX * 2),
+    h: Math.min(imageHeight, rect.h + padY * 2),
+    imageWidth,
+    imageHeight
+  };
+}
+
+function setSync(text: string, ok: boolean): void {
+  useStore.setState({ sync: { text, at: Date.now(), ok } });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 等一件事，超时就算它没成。截网页在窗口最小化的时候会一直不返回
+ * （Electron 要等到有画面才给图），不设上限的话实时截取会卡在那一拍上再也不动。
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(what)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
+
+interface PageShot {
+  id: number;
+  /** 认出来的路数。 */
+  size: number;
+  stones: number[];
+  /** 网格在截图里的位置，点击坐标靠它换算。 */
+  grid: GridFit;
+  /** 截图的像素尺寸。 */
+  imageWidth: number;
+  imageHeight: number;
+  /** 网页视口的 CSS 像素尺寸，点击坐标要按这个换算。 */
+  viewWidth: number;
+  viewHeight: number;
+}
+
+/**
+ * 截一次网页并认出上面的棋盘，认不出来就返回一句原因，不抛异常：
+ * 实时截取每隔几秒来一次，页面正在加载、翻页、弹窗都是常态，抛异常会一路炸到事件循环里。
+ */
+async function shotPage(): Promise<PageShot | string> {
+  const view = currentView();
+  if (!view) return '内置浏览器里还没有页面';
+  const viewSize = viewSizeOf(view.el);
+  if (!viewSize) return '浏览器那块还没显示出来';
+  let dataUrl: string | null = null;
+  try {
+    dataUrl = await withTimeout(window.api.browser.capture(view.id), 6000, '截网页没在 6 秒内返回，大概是窗口被最小化了');
+  } catch (e) {
+    return '截取失败：' + (e instanceof Error ? e.message : String(e));
+  }
+  if (!dataUrl) return '截取失败，页面可能还没加载好';
+  let data: ImageData;
+  try {
+    data = await imageDataFromUrl(dataUrl);
+  } catch {
+    return '截下来的画面读不出来';
+  }
+  // 路数按本地这盘给个提示：认得又快又准，真要是对不上（比如网页上是 19 路）
+  // 后面的比对会如实报出来，不会拿着错的路数往下算。
+  const tree = useStore.getState().tree;
+  const res = recognizeBoard(data, {
+    expectedSize: propNum(tree, tree.root, 'SZ', 19),
+    crop: cropFor(data.width, data.height),
+    // 开局两边都是空盘，实盘识别该认下这个画面；手动导入那边没这个选项，空盘仍然提醒。
+    allowEmpty: true
+  });
+  if (!res.ok || !res.diagnostics) {
+    // 网格都没找着，多半是棋盘在画面里太小。手动导入那条路会提示"在图上框选棋盘"，
+    // 实时截取没有框选这一步，得告诉用户去调分屏或者网页缩放。
+    return res.diagnostics
+      ? res.message || '没认出网页上的棋盘'
+      : '认不出网页上的棋盘：让棋盘完整、大一些地出现在浏览器那块里（把分隔条往棋盘那边拖，或者在网页里按 Ctrl 加号放大）';
+  }
+  // 自己找出来的棋盘框留给下一次裁。手动框的不能记，记了会一次比一次大。
+  if (!res.diagnostics.usedCrop) {
+    const rect = res.diagnostics.boardRect;
+    if (rect.w < data.width * 0.98 || rect.h < data.height * 0.98) rememberCrop(rect, data.width, data.height);
+  }
+  return {
+    id: view.id,
+    size: res.size,
+    stones: res.stones,
+    grid: res.diagnostics.grid,
+    imageWidth: data.width,
+    imageHeight: data.height,
+    viewWidth: viewSize.width,
+    viewHeight: viewSize.height
+  };
 }

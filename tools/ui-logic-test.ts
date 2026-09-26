@@ -4,9 +4,10 @@
  * 某块窗口宽度下按钮被截断），或者让引擎直接拒收整盘棋。
  * 由 tools/ui-logic-selftest.mjs 打包后运行。
  */
-import { BLACK, WHITE, type GameTree, type SgfProps } from '../src/shared/types';
+import { BLACK, PASS, WHITE, type GameTree, type SgfProps } from '../src/shared/types';
 import { closeTab, makeTab, openTab, stepTab, tabTitle, type BrowserTab } from '../src/renderer/core/browser/tabs';
 import { normalizeUrl } from '../src/renderer/core/browser/url';
+import { expectStone, isPassPoint, planMirror, pointToPage } from '../src/renderer/core/browser/mirror';
 import { adviceChip, adviceLine, isPassMove, leadText } from '../src/renderer/core/advice';
 import { engineSgfFor } from '../src/renderer/core/sgf/engineSgf';
 import { parseSgf } from '../src/renderer/core/sgf/parse';
@@ -466,6 +467,86 @@ section('推荐作废：盘面一变，旧提示不能再留着');
   const withChild = addChild(t, t.root, { AB: ['jj'] });
   ok(positionKey(withChild.tree, withChild.id) !== key, '摆子写到子节点里同样算变');
   eq(positionAt(t, t.root).cells[60], BLACK, '顺带确认 dd 落在 60，坐标没再错位');
+}
+
+section('实时截取：认得出网页上多的那一手，认不出就什么都不动');
+{
+  // 19 路空盘，轮黑
+  const empty = new Int8Array(19 * 19);
+  eq(planMirror(19, empty, BLACK, empty).kind, 'same', '两边都是空盘就是一致');
+  const whiteAppeared = Int8Array.from(empty);
+  whiteAppeared[60] = WHITE;
+  eq(planMirror(19, empty, BLACK, whiteAppeared).kind, 'mismatch', '轮黑走的时候网页上冒出白子，认不出来，宁可不动');
+
+  // 网页上多了黑棋一手
+  const oneMore = Int8Array.from(empty);
+  oneMore[60] = BLACK;
+  const plan = planMirror(19, empty, BLACK, oneMore);
+  ok(plan.kind === 'move' && plan.point === 60 && plan.color === BLACK, '刚好差一手，认出是哪一手的哪一方', plan);
+
+  // 提子：白 1 被黑围住只剩 0 位一口气，黑下在 0 提掉它，网页上就是"黑多一颗、白少一颗"
+  const surrounded = Int8Array.from(empty);
+  surrounded[1] = WHITE;
+  surrounded[2] = BLACK;
+  surrounded[19] = BLACK;
+  surrounded[20] = BLACK;
+  const captured = Int8Array.from(surrounded);
+  captured[0] = BLACK;
+  captured[1] = 0;
+  const cap = planMirror(19, surrounded, BLACK, captured);
+  ok(cap.kind === 'move' && cap.point === 0 && cap.color === BLACK, '带提子的一手也认得出来', cap);
+
+  // 打劫那种形状：本地白 1 只剩一口气，网页上白已经把 0 位提走了
+  const ko = Int8Array.from(empty);
+  ko[1] = WHITE;
+  ko[2] = BLACK;
+  ko[19] = BLACK;
+  ko[20] = BLACK;
+  const koTaken = Int8Array.from(ko);
+  koTaken[0] = WHITE;
+  const koPlan = planMirror(19, ko, BLACK, koTaken);
+  ok(koPlan.kind !== 'move', '网页上多出来的是白方的子（劫材那类），不硬接', koPlan);
+
+  // 差好几颗：报清楚多几颗少几颗
+  const twoMore = Int8Array.from(empty);
+  twoMore[60] = BLACK;
+  twoMore[61] = WHITE;
+  const far = planMirror(19, empty, BLACK, twoMore);
+  ok(far.kind === 'mismatch' && far.missing === 2 && far.extra === 0, '差两颗就报差两颗，不猜是哪一手', far);
+
+  const gone = planMirror(19, oneMore, WHITE, empty);
+  ok(gone.kind === 'mismatch' && gone.missing === 0 && gone.extra === 1, '本地有网页上没有的算"本地多"', gone);
+
+  // 路数都不一样（网页上是 9 路），直接不算
+  eq(planMirror(19, empty, BLACK, new Int8Array(81)).kind, 'mismatch', '路数对不上按对不上处理，不会拿去硬套');
+
+  eq(expectStone(19, oneMore, 60, BLACK), true, '点完核对：那颗黑子确实在');
+  eq(expectStone(19, oneMore, 60, WHITE), false, '颜色不对就不算落上');
+  eq(expectStone(19, oneMore, 61, BLACK), false, '旁边那点还是空的');
+  ok(isPassPoint(PASS) && isPassPoint(-1) && !isPassPoint(60), '停一手不往网页上点');
+}
+
+section('自动落子：交叉点换算成网页坐标');
+{
+  // 截图和视口一样大：1:1，直接用网格坐标
+  const grid = { originX: 40, originY: 50, step: 30, size: 19 };
+  const same = pointToPage(grid, 0, { width: 640, height: 640 }, { width: 640, height: 640 });
+  ok(Boolean(same) && same!.x === 40 && same!.y === 50, '左上角那个交叉点', same);
+  const mid = pointToPage(grid, 9 * 19 + 9, { width: 640, height: 640 }, { width: 640, height: 640 });
+  ok(Boolean(mid) && mid!.x === 40 + 9 * 30 && mid!.y === 50 + 9 * 30, '天元按行列算准', mid);
+  const corner = pointToPage(grid, 18 * 19 + 18, { width: 640, height: 640 }, { width: 640, height: 640 });
+  ok(Boolean(corner) && corner!.x === 40 + 18 * 30 && corner!.y === 50 + 18 * 30, '右下角那个交叉点', corner);
+
+  // 显示器缩放：截图是视口的两倍大，坐标要缩回去一半
+  const half = pointToPage(grid, 9 * 19 + 9, { width: 640, height: 640 }, { width: 1280, height: 1280 });
+  ok(Boolean(half) && Math.abs(half!.x - (40 + 270) / 2) < 0.001, '截图比视口大时按比例缩回', half);
+
+  // 分屏拖动之后截图的宽高比会变，两个方向各算各的
+  const wide = pointToPage(grid, 9 * 19 + 9, { width: 320, height: 640 }, { width: 640, height: 640 });
+  ok(Boolean(wide) && Math.abs(wide!.x - (40 + 270) / 2) < 0.001 && Math.abs(wide!.y - (50 + 270)) < 0.001, '宽窄和高矮分开换算', wide);
+
+  eq(pointToPage(grid, 19 * 19, { width: 1, height: 1 }, { width: 1, height: 1 }), null, '越界的点不给坐标');
+  eq(pointToPage({ ...grid, step: 0 }, 60, { width: 1, height: 1 }, { width: 1, height: 1 }), null, '网格步长不合法就不点');
 }
 
 console.log(`\n界面逻辑自测：${passed} 项通过，${failed} 项失败`);

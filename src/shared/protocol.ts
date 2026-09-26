@@ -34,6 +34,7 @@ export const CH = {
   settingsSet: 'settings:set',
 
   browserCapture: 'browser:capture',
+  browserClick: 'browser:click',
   browserOpenExternal: 'browser:openExternal',
   browserOpenTab: 'browser:openTab',
 
@@ -194,6 +195,8 @@ export interface Api {
   };
   browser: {
     capture(webContentsId: number): Promise<string | null>;
+    /** 往网页上点一下。坐标是网页的 CSS 像素，自动落子用来把一手棋点到棋盘上。 */
+    click(webContentsId: number, x: number, y: number): Promise<boolean>;
     openExternal(url: string): Promise<void>;
     onOpenTab(cb: (req: OpenTabRequest) => void): () => void;
   };

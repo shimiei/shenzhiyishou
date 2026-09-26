@@ -128,6 +128,15 @@ export function App(): React.ReactElement {
     return () => clearTimeout(t);
   }, [current, tree, settings.analyzeVisits]);
 
+  // 实时截取：每两三秒看一眼网页上的棋盘。间隔不敢再短，截一张加认一次要两三百毫秒，
+  // 而且网页那头落完子常有动画，截太勤容易拍到还没落定的画面。
+  const liveCapture = settings.liveCapture;
+  useEffect(() => {
+    if (!liveCapture) return;
+    const t = window.setInterval(() => void useStore.getState().pollBrowser(), 2500);
+    return () => window.clearInterval(t);
+  }, [liveCapture]);
+
   // 侧栏切分支时不要残留旧提示
   useEffect(() => {
     useStore.getState().setHint(null);

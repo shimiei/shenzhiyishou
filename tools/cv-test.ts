@@ -133,6 +133,22 @@ for (const style of STYLES) {
   ok(count === 0, `${style.name}：空盘上数出 ${count} 颗子`);
 }
 
+section('空盘：手动导入要拦，实时截取要认');
+{
+  const style = STYLES[0];
+  const canvas = renderBoard(style, 19, [], 909);
+  const strict = recognize(canvas);
+  ok(!strict.ok, '默认认空盘算失败（导入时多半是截错了图）');
+  ok(strict.message.includes('没有看到棋子'), '并且说明是空盘', strict.message);
+  const lenient = recognizeBoard(
+    { data: canvas.data, width: canvas.width, height: canvas.height } as unknown as ImageData,
+    { expectedSize: 0, allowEmpty: true }
+  );
+  ok(lenient.ok && lenient.size === 19, '允许空盘的调用方拿到的是正常结果');
+  ok(lenient.stones.every((v) => v === EMPTY), '空盘上确实一颗子都没有');
+  ok(Boolean(lenient.diagnostics?.grid), '而且网格还在，实时截取要靠它算点击坐标');
+}
+
 section('误报：整盘只有黑子时一颗白子都不许有');
 for (const style of STYLES) {
   const points = patternPoints(19, true);

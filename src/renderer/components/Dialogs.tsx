@@ -287,13 +287,14 @@ function ModelsDialog({ onClose }: { onClose: () => void }): React.ReactElement 
           <div className="spacer" />
           <button
             className="btn primary"
+            title="停掉正在跑的引擎，用它加载默认网络重启。首次加载大网络要十几秒到几分钟。"
             onClick={async () => {
               const st = await window.api.engine.start({ modelId: settings.modelId });
               useStore.getState().setEngineStatus(st);
               toast(st.ready ? '已用新网络重启引擎' : st.error ?? '启动失败', st.ready ? 'success' : 'error');
             }}
           >
-            用选中的网络重启引擎
+            立刻换成这个网络
           </button>
           <button className="btn ghost" onClick={onClose}>
             关闭
@@ -316,7 +317,10 @@ function ModelsDialog({ onClose }: { onClose: () => void }): React.ReactElement 
                 {m.downloaded ? (
                   <button
                     className="btn sm"
-                    onClick={() => void setSettings({ modelId: m.id }).then(() => toast('已切换为 ' + m.name))}
+                    title="这只是把默认网络换掉，正在跑的引擎要等下次启动或开始分析时才换过来。想马上换，用下面那个“立刻换成这个网络”。"
+                    onClick={() =>
+                      void setSettings({ modelId: m.id }).then(() => toast('默认网络已设为 ' + m.name + '，下次启动引擎或开始分析时换过来'))
+                    }
                   >
                     设为默认
                   </button>

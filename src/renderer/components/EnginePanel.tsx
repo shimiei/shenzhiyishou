@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../state/store';
-import { BLACK, WHITE, type AnalysisMove, type AnalysisSnapshot } from '../../shared/types';
+import { BLACK, WHITE, type AnalysisMove, type AnalysisSnapshot, type ModelEntry } from '../../shared/types';
 
 function blackView(snapshot: AnalysisSnapshot | null): { winrate: number; lead: number } {
   if (!snapshot) return { winrate: 0.5, lead: 0 };
@@ -20,6 +20,7 @@ export interface EnginePanelProps {
 export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCandidate, style }: EnginePanelProps): React.ReactElement {
   const engine = useStore((s) => s.engineStatus);
   const analyzing = useStore((s) => s.analyzing);
+  const analyzeStarting = useStore((s) => s.analyzeStarting);
   const thinking = useStore((s) => s.thinking);
   const logs = useStore((s) => s.engineLogs);
   const toggleAnalysis = useStore((s) => s.toggleAnalysis);
@@ -28,6 +29,19 @@ export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCa
   const setSettings = useStore((s) => s.setSettings);
   const [showLogs, setShowLogs] = useState(false);
   const [bench, setBench] = useState<string>('');
+  const [models, setModels] = useState<ModelEntry[]>([]);
+
+  useEffect(() => {
+    void window.api.models.list().then(setModels, () => undefined);
+  }, []);
+
+  /*
+   * 面板上那个网络名是"引擎真正加载的那个"，不是设置里选的那个：
+   * 换网络要等引擎重启才生效，中间这段时间两个名字不一样。
+   * 不解释一句的话，用户会以为切换没成功。
+   */
+  const chosen = models.find((m) => m.id === settings.modelId);
+  const runningIsChosen = !engine.ready || !chosen || engine.modelName === chosen.name;
 
   const { winrate, lead } = useMemo(() => blackView(snapshot), [snapshot]);
   const blackPct = Math.round(winrate * 1000) / 10;
@@ -58,9 +72,30 @@ export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCa
         <div className="panel-head">
           <span className="title">引擎</span>
           <div className="spacer" />
-          <span className={engine.ready ? 'badge ok' : engine.error ? 'badge err' : engine.starting ? 'badge warn' : 'badge'}>
-            <span className={thinking || analyzing || engine.starting ? 'dot busy' : engine.ready ? 'dot ok' : engine.error ? 'dot err' : 'dot'} />
-            {engine.starting ? '启动中' : thinking ? '思考中' : analyzing ? '分析中' : engine.ready ? '就绪' : '未启动'}
+          <span className={engine.ready ? 'badge ok' : engine.error ? 'badge err' : engine.starting || analyzeStarting ? 'badge warn' : 'badge'}>
+            <span
+              className={
+                'dot ' +
+                (thinking || analyzing || engine.starting || analyzeStarting
+                  ? 'busy'
+                  : engine.ready
+                    ? 'ok'
+                    : engine.error
+                      ? 'err'
+                      : '')
+              }
+            />
+            {engine.starting
+              ? '启动中'
+              : analyzing
+                ? '分析中'
+                : analyzeStarting
+                  ? '分析准备中'
+                  : thinking
+                    ? '思考中'
+                    : engine.ready
+                      ? '就绪'
+                      : '未启动'}
           </span>
         </div>
         <div className="wr-block">
@@ -93,7 +128,11 @@ export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCa
           </div>
           <div className="stat">
             <div className="label">网络</div>
-            <div className="value" style={{ fontSize: 12 }} title={engine.modelName ?? ''}>
+            <div
+              className="value"
+              style={{ fontSize: 12 }}
+              title={runningIsChosen ? engine.modelName ?? '' : `引擎里跑的还是 ${engine.modelName ?? '—'}，下次启动时换成 ${chosen?.name ?? settings.modelId}`}
+            >
               {(engine.modelName ?? '—').split(' ')[0]}
             </div>
           </div>
@@ -102,6 +141,13 @@ export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCa
             <div className="value">{settings.threads}</div>
           </div>
         </div>
+        {runningIsChosen ? null : (
+          <div className="small faint" style={{ padding: '0 10px 8px' }}>
+            已经换成 {chosen?.name ?? settings.modelId}，引擎里跑的还是 {engine.modelName}，
+            <br />
+            下次启动引擎或开始分析时换过来。想现在就换，去“管理网络”点“立刻换成这个网络”。
+          </div>
+        )}
         <div className="row wrap" style={{ padding: '0 10px 10px' }}>
           {!engine.ready ? (
             <button className="btn primary sm" onClick={() => void startEngine()}>
@@ -139,9 +185,19 @@ export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCa
         <div className="panel-body flush" style={{ flex: 1, minHeight: 0 }}>
           {candidates.length === 0 ? (
             <div className="empty">
-              还没有分析数据。
-              <br />
-              点上面的“实时分析”开始，或者按 A。
+              {analyzeStarting && !analyzing ? (
+                <>
+                  分析引擎正在启动，第一次要开 OpenCL 上下文、加载大网络，
+                  <br />
+                  核显上通常十几秒，稍等一下。
+                </>
+              ) : (
+                <>
+                  还没有分析数据。
+                  <br />
+                  点上面的“实时分析”开始，或者按 A。
+                </>
+              )}
             </div>
           ) : (
             <div className="candidates">

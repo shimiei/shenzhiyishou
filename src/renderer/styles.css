@@ -1507,6 +1507,29 @@ webview {
   font-size: 11px;
 }
 
+/* 实时截取/自动落子的状态，跟地址栏那条挤在一行里，长了下省略 */
+.sync-msg {
+  display: inline-block;
+  max-width: 38ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+.sync-msg.ok {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.sync-msg.err {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
 .log-box {
   font-family: var(--mono);
   font-size: 11px;

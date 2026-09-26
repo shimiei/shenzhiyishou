@@ -50,6 +50,7 @@ const api: Api = {
   },
   browser: {
     capture: (webContentsId: number) => ipcRenderer.invoke(CH.browserCapture, webContentsId),
+    click: (webContentsId: number, x: number, y: number) => ipcRenderer.invoke(CH.browserClick, webContentsId, x, y),
     openExternal: (url: string) => ipcRenderer.invoke(CH.browserOpenExternal, url),
     onOpenTab: (cb: (req: OpenTabRequest) => void) => on<OpenTabRequest>(CH.browserOpenTab, cb)
   },

@@ -422,6 +422,21 @@ function registerIpc(): void {
     if (image.isEmpty()) return null;
     return image.toDataURL();
   });
+  /*
+   * 往网页里点一下（自动落子用）。坐标是网页的 CSS 像素，跟截图上的像素一一对应。
+   * 先把指针移过去再按下抬起：只发按下抬起的话，有些页面靠 mouseover/hover
+   * 才认得出落点的棋盘（canvas 里点哪儿算哪儿的虽然不看这个，但移一下更接近真人操作）。
+   */
+  ipcMain.handle(CH.browserClick, async (_e, webContentsId: number, x: number, y: number) => {
+    const target = webContents.fromId(webContentsId);
+    if (!target) return false;
+    const px = Math.round(x);
+    const py = Math.round(y);
+    target.sendInputEvent({ type: 'mouseMove', x: px, y: py });
+    target.sendInputEvent({ type: 'mouseDown', x: px, y: py, button: 'left', clickCount: 1 });
+    target.sendInputEvent({ type: 'mouseUp', x: px, y: py, button: 'left', clickCount: 1 });
+    return true;
+  });
   ipcMain.handle(CH.browserOpenExternal, async (_e, url: string) => {
     await shell.openExternal(url);
   });

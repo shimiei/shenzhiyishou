@@ -120,7 +120,10 @@ export interface AppSettings {
   moveNumbers: boolean;
   sound: boolean;
   browserHome: string;
-  autoCapture: boolean;
+  /** 实时截取：隔几秒看一眼内置浏览器里的棋盘，把对手刚下的那一手接到谱上。 */
+  liveCapture: boolean;
+  /** 自动落子：程序里落的子顺手点回网页棋盘。默认关，它真的会动到网页里那盘棋。 */
+  autoPlay: boolean;
   recordDir: string;
   /**
    * 上次退出时的窗口尺寸与位置，退出前记下来，下次照着开。
@@ -170,7 +173,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   moveNumbers: false,
   sound: true,
   browserHome: 'about:blank',
-  autoCapture: true,
+  liveCapture: false,
+  autoPlay: false,
   recordDir: '',
   window: {
     width: 1500,
