@@ -345,6 +345,12 @@ function clampRange(v: number, lo: number, hi: number): number {
 }
 
 /**
+ * 实时分析的代号，每次发起和每次停下都加一。引擎那头回话晚一步时用它分辨
+ * "这次回话还算不算数"，见 startAnalysis 与 stopAnalysis。
+ */
+let analyzeRun = 0;
+
+/**
  * 拖分隔条时每一帧都写盘太凶，攒一会儿再写。
  * 只存布局这几项，别的字段交给主进程合并，免得把窗口位置之类的覆盖掉。
  */
@@ -657,7 +663,12 @@ export const useStore = create<AppStore>((set, get) => ({
      */
     const res = addMoveNode(tree, current, color, point, { mainLine: true, source: 'human' });
     get().commit(res.tree, res.id);
-    get().setAnalysis(null);
+    /*
+     * 实时分析开着的时候先别清这条结论：新的一手要一两百毫秒才算出来，
+     * 中间这段时间让上一个局面的胜率、目差和形势块留在屏幕上，新的数据一到就顶替掉，
+     * 比整块闪一下更像回事。分析关着就得清，不然那些数字会一直挂在旧局面上。
+     */
+    if (!get().analyzing) get().setAnalysis(null);
     // 只有本程序里落的子才往网页上点。实时截取接回来的那一手是从网页上读来的，
     // 再点回去等于自己跟自己下。
     if (from === 'local') void get().forwardMoveToBrowser(point, color, current);
@@ -856,7 +867,12 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   pickCandidate(move, winrate, scoreLead) {
-    const { tree, current } = get();
+    const { tree, current, analysis } = get();
+    /*
+     * 面板上那几行可能还是上一个局面的（刚落下新的一手、新的还没算出来）。
+     * 那上面推荐的点在这个局面上未必成立，索性不接这一下，免得画个错的推荐圈。
+     */
+    if (analysis && analysis.nodeId >= 0 && analysis.nodeId !== current) return;
     set({ hint: { color: colorToPlayAt(tree, current), move, winrate, scoreLead } });
   },
 
@@ -1146,8 +1162,15 @@ export const useStore = create<AppStore>((set, get) => ({
 
   async startAnalysis(force = false) {
     const { tree, current, settings, analyzing } = get();
-    if (analyzing && !force) return;
+    // 已经在跑、或者上一次刚发出去还没回来（冷启动那十几秒里连点两下），就别再发一次
+    if ((analyzing || get().analyzeStarting) && !force) return;
     const color = colorToPlayAt(tree, current);
+    /*
+     * 代号：每次发起、每次停下都加一。引擎那头回话晚一步的时候，只有代号还对的
+     * 那一次才算数。否则会是"用户已经点暂停了，回话一到又把 analyzing 点亮"，
+     * 徽章写着分析中、流却是断的。
+     */
+    const run = ++analyzeRun;
     // 第一次分析要先把分析引擎拉起来：核显上开 OpenCL 上下文加大网络要十几秒，
     // 这段时间界面上什么都不显示的话，用户只会觉得点下去卡死了。
     set({ analyzeStarting: true });
@@ -1173,15 +1196,31 @@ export const useStore = create<AppStore>((set, get) => ({
         get().toast('分析启动失败：' + (res.error ?? ''), 'error');
         return;
       }
-      set({ analyzing: true, analysis: null });
+      if (run !== analyzeRun) return;
+      /*
+       * 这里不清 analysis：上一条结论是上一个局面的，留着它顶到新数据来为止。
+       * 下了一手或者翻了一手之后整块先空掉再填满，看着像卡了一下；引擎第一条
+       * 结论来得很快（几十毫秒就有胜率，慢慢才准），续着显示更跟手。
+       */
+      set({ analyzing: true });
     } finally {
-      set({ analyzeStarting: false });
+      if (run === analyzeRun) set({ analyzeStarting: false });
     }
   },
 
   async stopAnalysis() {
+    /*
+     * 顺序是"先把状态落下来，再去等引擎"：
+     * 一、analyzing 立刻置回 false，App 里那个"局面一变就重开分析"的防抖就不会
+     *     再把分析拉起来。反过来的顺序有个真实的坏结局：刚落一手的两百毫秒内点暂停，
+     *     防抖把分析重新拉起来，紧接着 analyzeStop 的回话才到，结果是流断了、
+     *     面板空了，徽章还写着"分析中"。
+     * 二、点暂停就该立刻清空，不用等引擎回话。
+     * 代号加一是让还在路上的 analyzeStart 回话作废，它回来时不要再把 analyzing 点亮。
+     */
+    analyzeRun++;
+    set({ analyzing: false, analysis: null, analyzeStarting: false });
     await window.api.engine.analyzeStop();
-    set({ analyzing: false, analysis: null });
   },
 
   async toggleAnalysis() {

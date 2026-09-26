@@ -107,6 +107,13 @@ export function App(): React.ReactElement {
         void st.stopAnalysis();
       } else if (e.type === 'info' && e.snapshot) {
         const snap = e.snapshot;
+        /*
+         * nodeId 为 -1 的是对局引擎"正在算这一手"的实时战报，跟实时分析不是一回事，
+         * 分析关着的时候也照收（不然 AI 落子那几秒面板上什么都不显示）。
+         * 带节点号的是分析结论，分析关掉之后流断开之前可能还有一两行在路上，
+         * 别让它们把刚清空的面板又填上。
+         */
+        if (snap.nodeId >= 0 && !st.analyzing) return;
         if (snap.nodeId >= 0 && snap.nodeId !== useStore.getState().current) return;
         st.setAnalysis(snap);
       } else if (e.type === 'review' && e.review) {
@@ -128,6 +135,8 @@ export function App(): React.ReactElement {
   useEffect(() => {
     if (!analyzingRef.current) return;
     const t = setTimeout(() => {
+      // 这 200 毫秒里用户可能已经把分析关了（刚落一手就点暂停），那这一手之后就别再拉起来
+      if (!analyzingRef.current) return;
       void useStore.getState().startAnalysis(true);
     }, 200);
     return () => clearTimeout(t);
