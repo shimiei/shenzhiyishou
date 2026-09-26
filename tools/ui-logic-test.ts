@@ -6,7 +6,7 @@
  * 以及最后一手标记的可选样式：这几块错了不会崩，只会让复盘结论或界面标签不可信。
  * 由 tools/ui-logic-selftest.mjs 打包后运行。
  */
-import { BLACK, DEFAULT_SETTINGS, PASS, WHITE, type GameTree, type SgfProps } from '../src/shared/types';
+import { BLACK, DEFAULT_SETTINGS, PASS, WHITE, type GameTree, type RecordMeta, type SgfProps } from '../src/shared/types';
 import { closeTab, makeTab, openTab, stepTab, tabTitle, type BrowserTab } from '../src/renderer/core/browser/tabs';
 import { normalizeUrl } from '../src/renderer/core/browser/url';
 import { expectStone, isPassPoint, planMirror, pointToPage } from '../src/renderer/core/browser/mirror';
@@ -15,6 +15,23 @@ import { engineSgfFor } from '../src/renderer/core/sgf/engineSgf';
 import { serializeSgf } from '../src/renderer/core/sgf/serialize';
 import { labelValue, nextLabel, parseLabel } from '../src/renderer/core/sgf/codec';
 import { LAST_MOVE_MARK_OPTIONS } from '../src/renderer/core/board/marks';
+import { metaFromSgf } from '../src/renderer/core/records/meta';
+import {
+  allTags,
+  dateKey,
+  defaultTitle,
+  filterRecords,
+  makeRecordId,
+  matchRecord,
+  mergeAdopted,
+  planScan,
+  resultKind,
+  resultLabel,
+  safeFileName,
+  sortRecords,
+  suggestSgfName,
+  uniqueFileName
+} from '../src/shared/records';
 import { endpointHint, parseVisionGrid } from '../src/renderer/core/vision';
 import { visionBody, visionChat, visionPrompt } from '../src/main/vision';
 import {
@@ -1173,6 +1190,164 @@ section('视觉接口：请求怎么发、错怎么报');
   ok(String(silent.error).includes('没有返回正文'), '没正文时说不清就直说', silent.error);
   const noChoice = await visionChat(base, { fetchImpl: () => reply({}) });
   eq(noChoice.ok, false, '连 choices 都没有也算失败');
+}
+
+section('棋谱馆：标题与文件名');
+{
+  eq(defaultTitle({ blackName: '柯洁', whiteName: '朴廷桓', date: '2024-03-05' }), '柯洁 对 朴廷桓 2024-03-05', '有名字有日期');
+  eq(defaultTitle({ blackName: '柯洁', whiteName: '朴廷桓' }), '柯洁 对 朴廷桓', '没日期就不带');
+  eq(defaultTitle({ date: '2024-03-05' }), '黑 对 白 2024-03-05', '没名字就写黑白');
+  eq(defaultTitle({ blackName: '  柯洁 ', whiteName: '  ' }), '柯洁 对 白', '空白名字当成没写');
+
+  eq(safeFileName('柯洁 对 朴廷桓 2024-03-05'), '柯洁 对 朴廷桓 2024-03-05', '正常标题原样用');
+  eq(safeFileName('第三局 （黑）: 复盘/讲解?'), '第三局 （黑） 复盘 讲解', '文件名不让用的字符换成空格');
+  eq(safeFileName('  连着   的空格  '), '连着 的空格', '多余的空格收成一个');
+  eq(safeFileName('结尾的点. '), '结尾的点', '结尾的点与空格去掉');
+  eq(safeFileName(''), '棋谱', '空标题有个兜底名字');
+  eq(safeFileName('a'.repeat(200)).length, 80, '太长的标题截断');
+  ok(!safeFileName('a/b\\c:d*e?f"g<h>i|j').includes('\\'), '反斜杠不会漏进来');
+
+  eq(uniqueFileName('柯洁 对 朴廷桓', ['别的.sgf']), '柯洁 对 朴廷桓.sgf', '没撞名就按标题来');
+  eq(uniqueFileName('柯洁 对 朴廷桓', ['柯洁 对 朴廷桓.sgf']), '柯洁 对 朴廷桓-2.sgf', '撞了就加序号');
+  eq(uniqueFileName('柯洁 对 朴廷桓', ['柯洁 对 朴廷桓.sgf', '柯洁 对 朴廷桓-2.sgf']), '柯洁 对 朴廷桓-3.sgf', '再撞再加');
+  eq(uniqueFileName('A', ['a.sgf']), 'A-2.sgf', '大小写不一样也算撞名（Windows 上是一个文件）');
+
+  eq(suggestSgfName({ blackName: '柯洁', whiteName: '朴廷桓', date: '2024-03-05' }), '柯洁 对 朴廷桓 2024-03-05.sgf', '另存为的名字按标题起');
+  eq(suggestSgfName({ blackName: 'a:b', whiteName: 'c' }), 'a b 对 c.sgf', '名字里的斜杠冒号换掉，照旧存得下去');
+  eq(suggestSgfName({}), '黑 对 白.sgf', '什么都没写也有个名字');
+}
+
+section('棋谱馆：结果那一栏怎么说人话');
+{
+  eq(resultKind('B+R'), 'black', 'B 开头是黑胜');
+  eq(resultKind('w+3.5'), 'white', '小写也认');
+  eq(resultKind('0'), 'draw', '0 是和棋');
+  eq(resultKind(''), 'unknown', '空着是不知道');
+  eq(resultLabel('B+R'), '黑中盘胜', '中盘胜');
+  eq(resultLabel('W+3.5'), '白胜 3.5 目', '数目胜');
+  eq(resultLabel('B+T'), '黑超时胜', '超时胜');
+  eq(resultLabel('0'), '和棋', '和棋');
+  eq(resultLabel(''), '未记结果', '没写结果就说没写');
+  eq(resultLabel('看不懂'), '看不懂', '认不出来就原样写回去');
+}
+
+section('棋谱馆：搜索、排序、筛选');
+{
+  const rec = (over: Partial<RecordMeta>): RecordMeta => ({
+    id: over.id ?? 'r1',
+    title: over.title ?? '柯洁 对 朴廷桓',
+    blackName: over.blackName ?? '柯洁',
+    whiteName: over.whiteName ?? '朴廷桓',
+    result: over.result ?? 'B+R',
+    date: over.date ?? '2024-03-05',
+    size: over.size ?? 19,
+    moves: over.moves ?? 210,
+    savedAt: over.savedAt ?? 1000,
+    file: over.file ?? 'a.sgf',
+    tags: over.tags ?? []
+  });
+  const a = rec({ id: 'a', title: '柯洁 对 朴廷桓', blackName: '柯洁', whiteName: '朴廷桓', date: '2024-03-05', savedAt: 300 });
+  const b = rec({ id: 'b', title: '申真谞 对 李轩豪', blackName: '申真谞', whiteName: '李轩豪', date: '2023-11-20', savedAt: 900, result: 'W+1.5', moves: 305 });
+  const c = rec({ id: 'c', title: '自战解说', blackName: '我', whiteName: '我', result: '', date: '', savedAt: 600, size: 13, moves: 88, tags: ['复盘'] });
+  const list = [a, b, c];
+
+  ok(matchRecord(a, '柯洁'), '搜黑方名字搜得到');
+  ok(matchRecord(a, '朴廷桓'), '搜白方名字也搜得到');
+  ok(matchRecord(a, '2024'), '搜日期搜得到');
+  ok(matchRecord(c, '复盘'), '搜标签搜得到');
+  ok(matchRecord(a, '柯洁 2024'), '两段都命中才算（空格分开）');
+  ok(!matchRecord(a, '柯洁 2023'), '有一段没命中就不算');
+  ok(matchRecord(a, '   '), '空搜索词谁都不筛');
+
+  eq(sortRecords(list, 'savedAt').map((r) => r.id).join(''), 'bca', '按保存时间：新的在前');
+  eq(sortRecords(list, 'date').map((r) => r.id).join(''), 'abc', '按对局日期：新的在前，没日期的垫底');
+  eq(sortRecords(list, 'moves').map((r) => r.id).join(''), 'bac', '按手数：多的在前');
+  eq(sortRecords(list, 'title')[0].id, 'a', '按标题：柯（k）在申（sh）与自（z）前面');
+  eq(list.map((r) => r.id).join(''), 'abc', '排序不动原来那一份');
+  eq(dateKey('2024-03-05'), '20240305', '日期键只看数字');
+  eq(dateKey('2024-3-5'), '20240305', '一位数的月日补零，跟写全的排在一起');
+  eq(dateKey('20240305'), '20240305', '连写的也认');
+  eq(dateKey(''), '00000000', '没日期垫到最前');
+
+  eq(filterRecords(list, { query: '申' }).map((r) => r.id).join(''), 'b', '按关键词筛');
+  eq(filterRecords(list, { result: 'black' }).map((r) => r.id).join(''), 'a', '按结果筛');
+  eq(filterRecords(list, { result: 'unknown' }).map((r) => r.id).join(''), 'c', '没写结果的也能单独筛出来');
+  eq(filterRecords(list, { size: 13 }).map((r) => r.id).join(''), 'c', '按几路筛');
+  eq(filterRecords(list, { tags: ['复盘'] }).map((r) => r.id).join(''), 'c', '按标签筛');
+  eq(filterRecords(list, { query: '柯洁', result: 'black', size: 19 }).map((r) => r.id).join(''), 'a', '几项一起筛');
+  eq(filterRecords(list, { query: '柯洁', result: 'white' }).length, 0, '筛不到就是空');
+  const day = 86400000;
+  const when = 1_700_000_000_000;
+  const aged = [
+    rec({ id: 'old', savedAt: when - 3 * day }),
+    rec({ id: 'mid', savedAt: when - day / 2 }),
+    rec({ id: 'new', savedAt: when - 3600_000 })
+  ];
+  eq(filterRecords(aged, { days: 1, now: when }).map((r) => r.id).join(','), 'mid,new', '按最近多少天筛：三天前那份不进');
+  eq(filterRecords(aged, { days: 0, now: when }).length, 3, '不限时间就都留下');
+  eq(allTags(list)[0].tag, '复盘', '标签列出来');
+  eq(allTags(list)[0].count, 1, '标签带出现次数');
+}
+
+section('棋谱馆：目录扫描与索引合并');
+{
+  const meta = (file: string, id = file): RecordMeta => ({
+    id,
+    title: file,
+    blackName: '',
+    whiteName: '',
+    result: '',
+    date: '',
+    size: 19,
+    moves: 0,
+    savedAt: 1,
+    file,
+    tags: []
+  });
+  const plan = planScan([meta('a.sgf'), meta('b.sgf'), meta('没了.sgf')], ['a.sgf', 'b.sgf', 'c.sgf', 'library.json', '笔记.txt']);
+  eq(plan.added.join(','), 'c.sgf', '目录里多出来的收编进来');
+  eq(plan.missing.join(','), '没了.sgf', '索引里有、文件没了的是丢失');
+  eq(planScan([meta('a.sgf')], ['A.SGF']).missing.length, 0, '大小写不同也算同一个文件');
+  eq(planScan([], ['x.sgf', 'y.sgf']).added.join(','), 'x.sgf,y.sgf', '空索引把目录里的都算新');
+  eq(planScan([meta('a.sgf')], ['library.json']).added.length, 0, '索引文件自己不是棋谱');
+
+  const adopted = mergeAdopted([meta('a.sgf', 'ra')], [{ file: 'c.sgf', meta: { title: '柯洁 对 朴廷桓', moves: 120 } }], 5000);
+  eq(adopted.added, 1, '收编了一份');
+  eq(adopted.list.length, 2, '索引里多了一条');
+  eq(adopted.list[1].title, '柯洁 对 朴廷桓', '收编时用识别出来的标题');
+  eq(adopted.list[1].moves, 120, '手数也带上');
+  eq(adopted.list[1].savedAt, 5000, '没给保存时间就用当下');
+  eq(adopted.list[1].tags.length, 0, '新收编的没有标签');
+  const again = mergeAdopted(adopted.list, [{ file: 'C.SGF', meta: {} }], 6000);
+  eq(again.added, 0, '已经在索引里的不再收一遍（大小写也一样）');
+  eq(again.list.length, 2, '也不重复写进索引');
+  const noTitle = mergeAdopted([], [{ file: '无名.sgf', meta: {} }], 7000);
+  eq(noTitle.list[0].title, '无名', '没有标题就用文件名');
+
+  eq(makeRecordId([], 1000).length > 1, true, '编号有内容');
+  eq(makeRecordId([makeRecordId([], 1000)], 1000) === makeRecordId([], 1000), false, '同一毫秒里连着生成不会撞');
+  const ids = [makeRecordId([], 1000)];
+  ids.push(makeRecordId(ids, 1000));
+  ids.push(makeRecordId(ids, 1000));
+  eq(new Set(ids).size, 3, '连着生成三个各不相同');
+}
+
+section('棋谱馆：从棋谱里读出那几栏');
+{
+  const sgf = `(;GM[1]FF[4]SZ[19]KM[7.5]PB[柯洁]PW[朴廷桓]RE[B+R]DT[2024-03-05];B[pd];W[dp];B[pq])`;
+  const meta = metaFromSgf(sgf, 'x.sgf', 1234);
+  ok(meta !== null, '读得出来');
+  eq(meta?.title, '柯洁 对 朴廷桓 2024-03-05', '标题按双方与日期起');
+  eq(meta?.blackName, '柯洁', '黑方名字');
+  eq(meta?.whiteName, '朴廷桓', '白方名字');
+  eq(meta?.result, 'B+R', '结果');
+  eq(meta?.size, 19, '几路');
+  eq(meta?.moves, 3, '手数只数主线上的着手');
+  eq(meta?.savedAt, 1234, '保存时间用传进来的那个');
+  eq(metaFromSgf('这不是棋谱', 'x.sgf', 1), null, '读不出来就是 null');
+  const setup = metaFromSgf(`(;GM[1]FF[4]SZ[13]AB[dd][pp]AW[pd])`, 'y.sgf', 2);
+  eq(setup?.size, 13, '摆子的局面也读得出几路');
+  eq(setup?.moves, 0, '摆子不算手数');
 }
 
 console.log(`\n界面逻辑自测：${passed} 项通过，${failed} 项失败`);

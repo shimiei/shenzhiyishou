@@ -8,15 +8,15 @@ import { EnginePanel } from './components/EnginePanel';
 import { StatusBar } from './components/StatusBar';
 import { BrowserPanel } from './components/BrowserPanel';
 import { DragHandle } from './components/DragHandle';
+import { ScrollRow } from './components/ScrollRow';
 import { ImageImportDialog } from './components/ImageImport';
 import { DialogsHost } from './components/Dialogs';
+import { LibraryPage } from './components/LibraryPage';
 import { Board, type Candidate } from './components/Board';
 import { useShortcuts } from './hooks/useShortcuts';
 import {
-  infoFromTree,
   marksAt,
   moveAtSized,
-  moveNumberAt,
   pathTo,
   positionAt,
   propNum,
@@ -80,6 +80,7 @@ export function App(): React.ReactElement {
   const freeColor = useStore((s) => s.freeColor);
   const setFreeColor = useStore((s) => s.setFreeColor);
   const turnOverride = useStore((s) => s.turnOverride);
+  const libraryPage = useStore((s) => s.libraryPage);
   const thinking = useThinking();
   const wsRef = useRef<HTMLDivElement | null>(null);
 
@@ -199,17 +200,11 @@ export function App(): React.ReactElement {
           });
           break;
         case 'save':
+          // 保存就是存进棋谱馆，不再弹系统对话框；想存成散装 .sgf 走另存为
+          void s.saveToLibrary();
+          break;
         case 'saveAs':
-          void (async () => {
-            const content = serializeSgf(s.tree);
-            const info = infoFromTree(s.tree);
-            const name = `${info.blackName || '黑'}对${info.whiteName || '白'}.sgf`;
-            const saved = await window.api.files.saveSgf(s.filePath ?? name, content);
-            if (saved) {
-              useStore.setState({ filePath: saved, dirty: false });
-              s.toast('已保存到 ' + saved, 'success');
-            }
-          })();
+          void s.saveAsFile();
           break;
         case 'importImage':
           void window.api.files.openImage().then((img) => {
@@ -266,23 +261,7 @@ export function App(): React.ReactElement {
           s.setDialog('models');
           break;
         case 'library':
-          void (async () => {
-            const info = infoFromTree(s.tree);
-            const content = serializeSgf(s.tree);
-            await window.api.library.save({
-              meta: {
-                title: `${info.blackName || '黑'} 对 ${info.whiteName || '白'}${info.date ? ' ' + info.date : ''}`,
-                blackName: info.blackName,
-                whiteName: info.whiteName,
-                result: info.result,
-                date: info.date,
-                size: info.size,
-                moves: moveNumberAt(s.tree, s.current)
-              },
-              content
-            });
-            s.toast('已存入棋谱库', 'success');
-          })();
+          s.setLibraryPage(true);
           break;
         case 'toggleBrowser':
           s.setBrowserOpen(!s.browserOpen);
@@ -507,58 +486,59 @@ export function App(): React.ReactElement {
             >
               <BoardTabs />
               <div className="toolbar" style={{ height: 34, minHeight: 34, background: 'transparent', borderBottom: 'none', paddingTop: 4 }}>
-                <div className="seg" title="落子与编辑工具">
-                  {(
-                    [
-                      ['play', '落子'],
-                      ['free', '自由落子'],
-                      ['black', '放黑子'],
-                      ['white', '放白子'],
-                      ['erase', '拿掉子'],
-                      ['triangle', '三角'],
-                      ['square', '方块'],
-                      ['circle', '圆'],
-                      ['cross', '叉'],
-                      ['label', '字母']
-                    ] as Array<[typeof tool, string]>
-                  ).map(([t, label]) => (
-                    <button
-                      key={t}
-                      className={'seg-item' + (tool === t ? ' active' : '')}
-                      onClick={() => setTool(t)}
-                      title={
-                        t === 'play'
-                          ? '按棋谱轮流落子：这一手该谁走就落谁的颜色'
-                          : t === 'free'
-                            ? '自由落子：下一手落哪个颜色由你定，黑白不再轮流。是真的一手棋（占手数、能悔棋），补一手、照着书录棋都行'
-                            : t === 'black' || t === 'white'
-                              ? '摆子：只把这个颜色的子摆在盘上，不占手数。摆局面、改局面用它'
-                              : t === 'erase'
-                                ? '把这一点上的子拿掉，不占手数'
-                                : '标记：点在子或空点上，不改动棋子'
-                      }
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                {tool === 'free' ? (
-                  <div className="seg" title="自由落子要落的颜色">
-                    <button
-                      className={'seg-item' + (freeColor === BLACK ? ' active' : '')}
-                      onClick={() => setFreeColor(BLACK)}
-                    >
-                      <span className="stone-dot black" />黑
-                    </button>
-                    <button
-                      className={'seg-item' + (freeColor === BLACK ? '' : ' active')}
-                      onClick={() => setFreeColor(2)}
-                    >
-                      <span className="stone-dot white" />白
-                    </button>
+                <ScrollRow className="tool-row" revealKey={tool === 'free' ? `free-${freeColor}` : tool}>
+                  <div className="seg" title="落子与编辑工具">
+                    {(
+                      [
+                        ['play', '落子'],
+                        ['free', '自由落子'],
+                        ['black', '放黑子'],
+                        ['white', '放白子'],
+                        ['erase', '拿掉子'],
+                        ['triangle', '三角'],
+                        ['square', '方块'],
+                        ['circle', '圆'],
+                        ['cross', '叉'],
+                        ['label', '字母']
+                      ] as Array<[typeof tool, string]>
+                    ).map(([t, label]) => (
+                      <button
+                        key={t}
+                        className={'seg-item' + (tool === t ? ' active' : '')}
+                        onClick={() => setTool(t)}
+                        title={
+                          t === 'play'
+                            ? '按棋谱轮流落子：这一手该谁走就落谁的颜色'
+                            : t === 'free'
+                              ? '自由落子：下一手落哪个颜色由你定，黑白不再轮流。是真的一手棋（占手数、能悔棋），补一手、照着书录棋都行'
+                              : t === 'black' || t === 'white'
+                                ? '摆子：只把这个颜色的子摆在盘上，不占手数。摆局面、改局面用它'
+                                : t === 'erase'
+                                  ? '把这一点上的子拿掉，不占手数'
+                                  : '标记：点在子或空点上，不改动棋子'
+                        }
+                      >
+                        {label}
+                      </button>
+                    ))}
                   </div>
-                ) : null}
-                <div className="spacer" />
+                  {tool === 'free' ? (
+                    <div className="seg" title="自由落子要落的颜色">
+                      <button
+                        className={'seg-item' + (freeColor === BLACK ? ' active' : '')}
+                        onClick={() => setFreeColor(BLACK)}
+                      >
+                        <span className="stone-dot black" />黑
+                      </button>
+                      <button
+                        className={'seg-item' + (freeColor === BLACK ? '' : ' active')}
+                        onClick={() => setFreeColor(2)}
+                      >
+                        <span className="stone-dot white" />白
+                      </button>
+                    </div>
+                  ) : null}
+                </ScrollRow>
                 {thinking ? <span className="badge warn">引擎思考中…</span> : null}
                 <span className="small faint">{hover !== null ? coordText(hover, size) : ''}</span>
               </div>
@@ -628,6 +608,8 @@ export function App(): React.ReactElement {
         />
       </div>
       <StatusBar />
+      {/* 棋谱馆盖在棋盘这一页上面，棋盘那套还挂着（局面、分析都不动），回来时是原样 */}
+      {libraryPage ? <LibraryPage /> : null}
       <DialogsHost snapshot={snapshot} />
       <ImageImportDialog />
       <div className="toasts">

@@ -60,10 +60,6 @@ export function sessionFile(): string {
   return path.join(userDataRoot(), 'session.json');
 }
 
-export function libraryIndexFile(): string {
-  return path.join(recordsDir(), 'index.json');
-}
-
 export function tmpDir(): string {
   return path.join(runtimeRoot(), 'tmp');
 }

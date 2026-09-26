@@ -3,9 +3,23 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EngineManager } from './engine';
-import { deleteRecord, getRecord, listRecords, loadSettings, saveRecord, saveSettings } from './library';
+import {
+  adoptRecords,
+  deleteRecords,
+  exportRecords,
+  getRecord,
+  libraryDir,
+  listRecords,
+  loadSettings,
+  revealRecord,
+  saveRecord,
+  saveSettings,
+  scanLibrary,
+  setLibraryDir,
+  updateRecord
+} from './library';
 import { cancelDownload, downloadModel, importModel, listModels, openModelsFolder, removeModel } from './models';
-import { availableBackends, backendDir, engineRoot, ensureRuntime, logsDir, modelsDir, recordsDir, tmpDir, userDataRoot } from './paths';
+import { availableBackends, backendDir, engineRoot, ensureRuntime, logsDir, modelsDir, tmpDir, userDataRoot } from './paths';
 import { fitWindow, type Box } from './windowState';
 import { loadSession, saveSession } from './session';
 import { visionChat } from './vision';
@@ -25,6 +39,23 @@ function send(channel: string, payload: unknown): void {
 
 function emitEngine(e: EngineEvent): void {
   send(CH.engineEvent, e);
+}
+
+/**
+ * 验收时的取巧口子：环境变量 SZYS_TEST_PICK 里给了路径，那几个"选文件 / 选文件夹"的
+ * 系统对话框就不弹了，直接用给的那个。原生对话框只有真人点得动，自动验收点不了，
+ * 而"另存为到哪儿""导出到哪个文件夹""导入哪一份"这几条路又不能不验。
+ * 打包出去的程序里没人设这个变量（读不出来也当没设），这段就等于没有。
+ */
+function testPick(kind: 'libraryDir' | 'export' | 'save' | 'openSgf'): string | null {
+  const raw = process.env.SZYS_TEST_PICK;
+  if (!raw) return null;
+  try {
+    const v = (JSON.parse(raw) as Record<string, unknown>)[kind];
+    return typeof v === 'string' && v ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -255,7 +286,7 @@ function buildMenu(): void {
         { type: 'separator' },
         { label: '保存', accelerator: 'CmdOrCtrl+S', click: cmd('save') },
         { label: '另存为…', accelerator: 'CmdOrCtrl+Shift+S', click: cmd('saveAs') },
-        { label: '存入棋谱库', click: cmd('library') },
+        { label: '棋谱馆…', accelerator: 'CmdOrCtrl+L', click: cmd('library') },
         { type: 'separator' },
         { label: '复制 SGF 到剪贴板', click: cmd('copySgf') },
         { type: 'separator' },
@@ -341,7 +372,7 @@ function buildMenu(): void {
       submenu: [
         { label: '偏好设置…', accelerator: 'CmdOrCtrl+,', click: cmd('settings') },
         { label: '引擎与网络…', click: cmd('models') },
-        { label: '打开棋谱库目录', click: () => void shell.openPath(recordsDir()) },
+        { label: '打开棋谱馆目录', click: () => void shell.openPath(libraryDir()) },
         { label: '打开日志目录', click: () => void shell.openPath(logsDir()) }
       ]
     },
@@ -401,6 +432,8 @@ function registerIpc(): void {
   ipcMain.handle('models:openFolder', async () => openModelsFolder());
 
   ipcMain.handle(CH.filesOpenSgf, async () => {
+    const forced = testPick('openSgf');
+    if (forced) return { name: path.basename(forced), path: forced, content: readFileSync(forced, 'utf8') };
     const res = await dialog.showOpenDialog({
       title: '打开棋谱',
       filters: [
@@ -427,8 +460,25 @@ function registerIpc(): void {
     return { name: path.basename(p), path: p, dataUrl: `data:image/${mime};base64,${data.toString('base64')}` };
   });
   const saveDialog = async (defaultName: string, filters: Electron.FileFilter[]): Promise<string | null> => {
+    const forced = testPick('save');
+    if (forced) return forced;
     const res = await dialog.showSaveDialog({ title: '保存', defaultPath: defaultName, filters });
     return res.canceled || !res.filePath ? null : res.filePath;
+  };
+  const pickDirectory = async (
+    title: string,
+    defaultPath: string | undefined,
+    kind: 'libraryDir' | 'export'
+  ): Promise<string | null> => {
+    const forced = testPick(kind);
+    if (forced) return forced;
+    const res = await dialog.showOpenDialog({
+      title,
+      defaultPath,
+      // createDirectory：用户可以直接在对话框里新建一个文件夹当棋谱馆
+      properties: ['openDirectory', 'createDirectory']
+    });
+    return res.canceled || !res.filePaths[0] ? null : res.filePaths[0];
   };
   ipcMain.handle(CH.filesSaveSgf, async (_e, defaultName: string, content: string) => {
     const p = await saveDialog(defaultName, [{ name: 'SGF 棋谱', extensions: ['sgf'] }]);
@@ -444,13 +494,27 @@ function registerIpc(): void {
   });
 
   ipcMain.handle(CH.libraryList, () => listRecords());
+  ipcMain.handle(CH.libraryGet, async (_e, id: string) => getRecord(id));
   ipcMain.handle(CH.librarySave, async (_e, entry: { meta: Partial<RecordMeta>; content: string; id?: string }) =>
     saveRecord(entry)
   );
-  ipcMain.handle('library:get', async (_e, id: string) => getRecord(id));
-  ipcMain.handle(CH.libraryDelete, async (_e, id: string) => {
-    deleteRecord(id);
+  ipcMain.handle(CH.libraryDelete, async (_e, ids: string[]) => deleteRecords(ids));
+  ipcMain.handle(CH.libraryUpdate, async (_e, id: string, patch: { title?: string; tags?: string[] }) =>
+    updateRecord(id, patch)
+  );
+  // 导出要挑目标文件夹；不给就弹一个，取消了把 dir 报成 null，界面好说"没导出"
+  ipcMain.handle(CH.libraryExport, async (_e, ids: string[], dir?: string) => {
+    const target = dir ?? (await pickDirectory('导出到哪个文件夹', undefined, 'export'));
+    if (!target) return { dir: null, exported: 0, skipped: 0, names: [] };
+    return { dir: target, ...exportRecords(ids, target) };
   });
+  ipcMain.handle(CH.libraryScan, () => scanLibrary());
+  ipcMain.handle(CH.libraryAdopt, async (_e, items: Array<{ file: string; meta: Partial<RecordMeta> }>) =>
+    adoptRecords(items)
+  );
+  ipcMain.handle(CH.libraryChooseDir, () => pickDirectory('选择棋谱馆文件夹', undefined, 'libraryDir'));
+  ipcMain.handle(CH.librarySetDir, async (_e, dir: string, move: boolean) => setLibraryDir(dir, move));
+  ipcMain.handle(CH.libraryReveal, async (_e, id?: string) => revealRecord(id));
 
   ipcMain.handle(CH.settingsGet, () => loadSettings());
   ipcMain.handle(CH.settingsSet, async (_e, patch: Partial<AppSettings>) => {
@@ -517,7 +581,7 @@ function registerIpc(): void {
       userDataPath: userDataRoot(),
       bundledModelsDir: modelsDir(),
       userModelsDir: modelsDir(),
-      recordsDir: recordsDir(),
+      libraryDir: libraryDir(),
       logsDir: logsDir(),
       enginesAvailable: availableBackends(),
       cpu: { model: cpus[0]?.model?.trim() ?? '未知', cores: cpus.length, threads: cpus.length },

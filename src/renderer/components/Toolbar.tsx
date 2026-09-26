@@ -1,17 +1,5 @@
 import { useThinking, activeWebContentsId, useStore } from '../state/store';
-import { serializeSgf } from '../core/sgf/serialize';
-import { infoFromTree } from '../core/sgf/tree';
-
-function suggestName(): string {
-  const { tree } = useStore.getState();
-  const info = infoFromTree(tree);
-  const b = info.blackName || '黑';
-  const w = info.whiteName || '白';
-  const d = info.date
-    ? info.date.replace(/[^\d]/g, '').slice(0, 8)
-    : new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  return `${b}对${w}_${d}.sgf`;
-}
+import { ScrollRow } from './ScrollRow';
 
 export function Toolbar(): React.ReactElement {
   const zoom = useStore((s) => s.zoom);
@@ -45,13 +33,11 @@ export function Toolbar(): React.ReactElement {
   const gotoProblem = useStore((s) => s.gotoProblem);
 
   const save = async (): Promise<void> => {
-    const { tree, filePath } = useStore.getState();
-    const content = serializeSgf(tree);
-    const saved = await window.api.files.saveSgf(filePath ?? suggestName(), content);
-    if (saved) {
-      useStore.setState({ filePath: saved, dirty: false });
-      toast('已保存到 ' + saved, 'success');
-    }
+    await useStore.getState().saveToLibrary();
+  };
+
+  const saveAs = async (): Promise<void> => {
+    await useStore.getState().saveAsFile();
   };
 
   const capture = async (): Promise<void> => {
@@ -72,108 +58,115 @@ export function Toolbar(): React.ReactElement {
 
   return (
     <div className="toolbar">
-      <button className="btn" onClick={() => setDialog('newgame')} title="新建对局（Ctrl+N）">
-        新建
-      </button>
-      <button
-        className="btn"
-        title="打开棋谱（Ctrl+O）"
-        onClick={async () => {
-          const res = await window.api.files.openSgf();
-          if (res) loadSgf(res.content, res.path);
-        }}
-      >
-        打开
-      </button>
-      <button className="btn" onClick={() => void save()} title="保存棋谱（Ctrl+S）">
-        保存
-      </button>
-      <div className="tb-sep" />
-      <button className="btn" onClick={() => openBoardTab()} title="再开一盘：新标签里是一块空棋盘，手里这盘留着（Ctrl+T）">
-        新建标签
-      </button>
-      <button
-        className="btn"
-        onClick={() => duplicateBoard()}
-        title="复制打开：照现在这一盘再开一份（含分支与复盘结果），改哪边都不动另一边（Ctrl+Shift+D）"
-      >
-        复制打开
-      </button>
-      <div className="tb-sep" />
-      <button
-        className="btn"
-        title="从图片或截图识别棋谱（Ctrl+I）"
-        onClick={async () => {
-          const img = await window.api.files.openImage();
-          if (img) openImage({ dataUrl: img.dataUrl, name: img.name });
-        }}
-      >
-        图片识别
-      </button>
-      <button className="btn" onClick={() => void capture()} title="截取内置浏览器画面里的棋谱">
-        截取棋谱
-      </button>
-      <button className="btn" onClick={() => setBrowserOpen(true)} title="打开内置浏览器（Ctrl+B）">
-        内置浏览器
-      </button>
-      <div className="tb-sep" />
-      <button className="btn" disabled={past === 0} onClick={undo} title="撤销（Ctrl+Z）">
-        撤销
-      </button>
-      <button className="btn" disabled={future === 0} onClick={redo} title="重做（Ctrl+Y）">
-        重做
-      </button>
-      <div className="tb-sep" />
-      <button className="btn" disabled={Boolean(finished)} onClick={pass} title="停一手（P）">
-        停一手
-      </button>
-      <button className="btn danger" disabled={Boolean(finished)} onClick={resign} title="认输">
-        认输
-      </button>
-      <div className="tb-sep" />
-      <button className="btn" disabled={thinking} onClick={() => void doHint()} title="推荐现在这一方的一手，标明黑白；只给建议，不替你落子（H）">
-        提示
-      </button>
-      <button className="btn" disabled={thinking || Boolean(finished)} onClick={() => void aiMoveNow()} title="让引擎替现在这一方走一手，走完就停；辅助模式下用它当对手（空格）">
-        AI 走一手
-      </button>
-      <button
-        className={'btn' + (aiVsAi ? ' primary' : '')}
-        disabled={Boolean(finished) && !aiVsAi}
-        onClick={toggleAiVsAi}
-        title={
-          aiVsAi
-            ? '停下机机对局，回到自己下（M）'
-            : '机机对局：双方都交给 AI 自动走，从当前局面接着下。随时能开，也随时能停；想看引擎自己下出一盘再拿去复盘，就开它（M）'
-        }
-      >
-        {aiVsAi ? '停机机' : '机机对下'}
-      </button>
-      <button
-        className={'btn' + (analyzing ? ' primary' : '')}
-        onClick={() => void toggleAnalysis()}
-        title="开始或暂停实时分析（A）"
-      >
-        {analyzing ? '暂停分析' : '实时分析'}
-      </button>
-      <button className="btn" onClick={() => setDialog('score')} title="形势判断与数子（E）">
-        形势判断
-      </button>
-      <div className="tb-sep" />
-      <button
-        className={'btn' + (reviewRunning ? ' primary' : '')}
-        onClick={() => setDialog('review')}
-        title="逐手复盘：让引擎把这一局的每一手都算一遍，找出恶手与失误（R）"
-      >
-        {reviewRunning ? `复盘 ${reviewDone}/${reviewTotal}` : '复盘'}
-      </button>
-      <button className="btn" disabled={reviewMoves.length === 0} onClick={() => gotoProblem(-1)} title="跳到上一处问题手">
-        上一处问题
-      </button>
-      <button className="btn" disabled={reviewMoves.length === 0} onClick={() => gotoProblem(1)} title="跳到下一处问题手">
-        下一处问题
-      </button>
-      <div className="spacer" />
+      <ScrollRow className="main-row">
+        <button className="btn" onClick={() => setDialog('newgame')} title="新建对局（Ctrl+N）">
+          新建
+        </button>
+        <button
+          className="btn"
+          title="打开棋谱（Ctrl+O）"
+          onClick={async () => {
+            const res = await window.api.files.openSgf();
+            if (res) loadSgf(res.content, res.path);
+          }}
+        >
+          打开
+        </button>
+        <button className="btn" onClick={() => void save()} title="保存进棋谱馆（Ctrl+S）：存过一次的那盘按保存是更新原来那条，不会再存出一份">
+          保存
+        </button>
+        <button className="btn" onClick={() => void saveAs()} title="另存为：挑个地方存成散装 .sgf，给别的程序用（Ctrl+Shift+S）">
+          另存为
+        </button>
+        <button className="btn" onClick={() => useStore.getState().setLibraryPage(true)} title="棋谱馆：存在这儿的棋谱都在这儿，能搜、能筛、能打标签、能导出（Ctrl+L）">
+          棋谱馆
+        </button>
+        <div className="tb-sep" />
+        <button className="btn" onClick={() => openBoardTab()} title="再开一盘：新标签里是一块空棋盘，手里这盘留着（Ctrl+T）">
+          新建标签
+        </button>
+        <button
+          className="btn"
+          onClick={() => duplicateBoard()}
+          title="复制打开：照现在这一盘再开一份（含分支与复盘结果），改哪边都不动另一边（Ctrl+Shift+D）"
+        >
+          复制打开
+        </button>
+        <div className="tb-sep" />
+        <button
+          className="btn"
+          title="从图片或截图识别棋谱（Ctrl+I）"
+          onClick={async () => {
+            const img = await window.api.files.openImage();
+            if (img) openImage({ dataUrl: img.dataUrl, name: img.name });
+          }}
+        >
+          图片识别
+        </button>
+        <button className="btn" onClick={() => void capture()} title="截取内置浏览器画面里的棋谱">
+          截取棋谱
+        </button>
+        <button className="btn" onClick={() => setBrowserOpen(true)} title="打开内置浏览器（Ctrl+B）">
+          内置浏览器
+        </button>
+        <div className="tb-sep" />
+        <button className="btn" disabled={past === 0} onClick={undo} title="撤销（Ctrl+Z）">
+          撤销
+        </button>
+        <button className="btn" disabled={future === 0} onClick={redo} title="重做（Ctrl+Y）">
+          重做
+        </button>
+        <div className="tb-sep" />
+        <button className="btn" disabled={Boolean(finished)} onClick={pass} title="停一手（P）">
+          停一手
+        </button>
+        <button className="btn danger" disabled={Boolean(finished)} onClick={resign} title="认输">
+          认输
+        </button>
+        <div className="tb-sep" />
+        <button className="btn" disabled={thinking} onClick={() => void doHint()} title="推荐现在这一方的一手，标明黑白；只给建议，不替你落子（H）">
+          提示
+        </button>
+        <button className="btn" disabled={thinking || Boolean(finished)} onClick={() => void aiMoveNow()} title="让引擎替现在这一方走一手，走完就停；辅助模式下用它当对手（空格）">
+          AI 走一手
+        </button>
+        <button
+          className={'btn' + (aiVsAi ? ' primary' : '')}
+          disabled={Boolean(finished) && !aiVsAi}
+          onClick={toggleAiVsAi}
+          title={
+            aiVsAi
+              ? '停下机机对局，回到自己下（M）'
+              : '机机对局：双方都交给 AI 自动走，从当前局面接着下。随时能开，也随时能停；想看引擎自己下出一盘再拿去复盘，就开它（M）'
+          }
+        >
+          {aiVsAi ? '停机机' : '机机对下'}
+        </button>
+        <button
+          className={'btn' + (analyzing ? ' primary' : '')}
+          onClick={() => void toggleAnalysis()}
+          title="开始或暂停实时分析（A）"
+        >
+          {analyzing ? '暂停分析' : '实时分析'}
+        </button>
+        <button className="btn" onClick={() => setDialog('score')} title="形势判断与数子（E）">
+          形势判断
+        </button>
+        <div className="tb-sep" />
+        <button
+          className={'btn' + (reviewRunning ? ' primary' : '')}
+          onClick={() => setDialog('review')}
+          title="逐手复盘：让引擎把这一局的每一手都算一遍，找出恶手与失误（R）"
+        >
+          {reviewRunning ? `复盘 ${reviewDone}/${reviewTotal}` : '复盘'}
+        </button>
+        <button className="btn" disabled={reviewMoves.length === 0} onClick={() => gotoProblem(-1)} title="跳到上一处问题手">
+          上一处问题
+        </button>
+        <button className="btn" disabled={reviewMoves.length === 0} onClick={() => gotoProblem(1)} title="跳到下一处问题手">
+          下一处问题
+        </button>
+      </ScrollRow>
       <div className="seg" title="棋盘缩放">
         <button className="seg-item" onClick={() => setZoom(zoom - 0.1)}>
           −

@@ -9,9 +9,11 @@ import {
   type EngineStatus,
   type GameInfo,
   type GameTree,
+  type RecordMeta,
   type Stone
 } from '../../shared/types';
 import type { AppInfo } from '../../shared/protocol';
+import { defaultTitle, suggestSgfName } from '../../shared/records';
 import {
   addChild,
   addMoveNode,
@@ -104,7 +106,6 @@ export type DialogName =
   | 'settings'
   | 'about'
   | 'models'
-  | 'library'
   | 'score'
   | 'image'
   | 'gameinfo'
@@ -139,6 +140,8 @@ interface AppStore {
   dirty: boolean;
   /** 这一盘手动指定的行棋方（跟着这一盘走，见 core/boards 的 BoardSlice）。 */
   turnOverride: 1 | 2 | null;
+  /** 这一盘存在棋谱馆里的哪一条：存过之后按保存就是更新它。 */
+  record: { id: string; title: string } | null;
 
   /**
    * 打开着的几盘棋，像浏览器的标签页。顺序就是标签条上的顺序。
@@ -185,6 +188,8 @@ interface AppStore {
   dialog: DialogName;
   image: { dataUrl: string; name: string } | null;
   browserOpen: boolean;
+  /** 棋谱馆那一整页开着没有。整页盖在棋盘上，棋盘不卸载，回来还是原来的局面。 */
+  libraryPage: boolean;
   /** 棋盘占中间那块的比例，分两个方向各记一份：左右分栏那份是宽度比例，上下分栏是高度比例。 */
   splitRatio: number;
   splitRatioY: number;
@@ -314,6 +319,13 @@ interface AppStore {
   setDialog: (d: DialogName) => void;
   openImage: (img: { dataUrl: string; name: string } | null) => void;
   setBrowserOpen: (v: boolean) => void;
+  setLibraryPage: (v: boolean) => void;
+  /** 保存：进棋谱馆。存过一次的这一盘是更新原来那一条，不会再攒出一堆同名的。 */
+  saveToLibrary: () => Promise<void>;
+  /** 另存为：弹对话框存成散装 .sgf（要给别的程序、别的目录一份时才用它）。 */
+  saveAsFile: () => Promise<void>;
+  /** 从棋谱馆里打开一条。手里这盘动过就另开一个标签，跟打开棋谱一个规矩。 */
+  openRecord: (id: string) => Promise<void>;
   /** 拖分隔条：按这次生效的方向写对应的那份比例。 */
   setSplit: (v: number, axis: SplitAxis) => void;
   /** 切换中间那块的排布方向，传的就是要切到的方向；切过一次就不再算"没选过"了。 */
@@ -373,6 +385,29 @@ function sgfFor(tree: GameTree, node: number, override: 1 | 2 | null = null): st
  */
 function effColor(src: { tree: GameTree; current: number; turnOverride: 1 | 2 | null }): 1 | 2 {
   return turnWithOverride(src.tree, src.current, src.turnOverride);
+}
+
+/**
+ * 把一盘存进棋谱馆：存过的那条就地更新（标题也跟着用户在馆里改的留着），
+ * 头一回存才按"黑 对 白 日期"起标题。存盘按钮与关盘前的"存一份再关"都走这里，
+ * 两条路存出来的东西才一样。失败会抛，由调用方决定怎么跟用户说、要不要接着关。
+ */
+async function putInLibrary(slice: { tree: GameTree; record: BoardSlice['record'] }): Promise<RecordMeta> {
+  const info = infoFromTree(slice.tree);
+  const meta: Partial<RecordMeta> = {
+    blackName: info.blackName,
+    whiteName: info.whiteName,
+    result: info.result,
+    date: info.date,
+    size: info.size,
+    moves: moveNumberAt(slice.tree, mainLineEnd(slice.tree))
+  };
+  if (!slice.record) meta.title = defaultTitle(info);
+  return window.api.library.save({
+    meta,
+    content: serializeSgf(slice.tree),
+    id: slice.record?.id
+  });
 }
 
 const emptyReviewSummary: ReviewSummary = {
@@ -480,7 +515,7 @@ function activatePartial(st: AppStore, boards: BoardTab[], id: string): Partial<
 }
 
 /** 切换标签时该跟着关掉的对话框：里面显示的都是一盘棋的事。 */
-const BOARD_DIALOGS: DialogName[] = ['newgame', 'image', 'library', 'score', 'gameinfo', 'review'];
+const BOARD_DIALOGS: DialogName[] = ['newgame', 'image', 'score', 'gameinfo', 'review'];
 
 /** 刚关掉的标签记着，好开回来。留着超过十个就丢掉最早那个。 */
 function rememberClosed(list: BoardTab[], tab: BoardTab): BoardTab[] {
@@ -534,10 +569,19 @@ async function writeSession(): Promise<void> {
   const st = useStore.getState();
   if (!sessionReady || st.boards.length === 0) return;
   try {
-    await window.api.session.set(toSession(st.boards, st.activeBoard));
+    await window.api.session.set(toSession(tabsNow(st), st.activeBoard));
   } catch {
     // 存不上不影响下棋，下一次改动还会再试一遍
   }
+}
+
+/**
+ * 现在这几盘：当前那盘的状态摊在顶层，boards 里那份还是上次切走时留下的旧账。
+ * 直接拿 boards 去写会话的话，正看着的这一盘会落后一截（刚下的几手、馆里的编号都会丢）。
+ */
+function tabsNow(st: AppStore): BoardTab[] {
+  const live = sliceFrom(st);
+  return st.boards.map((t) => (t.id === st.activeBoard ? { ...t, slice: live } : t));
 }
 
 /** 改动攒一会儿再写：落一手、翻一页都写盘太凶。 */
@@ -562,6 +606,7 @@ export const useStore = create<AppStore>((set, get) => ({
   activeBoard: firstTab.id,
   closedBoards: [],
   pendingClose: null,
+  libraryPage: false,
 
   tool: 'play',
   freeColor: BLACK,
@@ -816,13 +861,15 @@ export const useStore = create<AppStore>((set, get) => ({
       const id = p.ids[0];
       const slice = sliceOf(get(), id);
       if (!slice) return;
-      const info = infoFromTree(slice.tree);
-      const name = `${info.blackName || '黑'}对${info.whiteName || '白'}.sgf`;
-      const saved = await window.api.files.saveSgf(slice.filePath ?? name, serializeSgf(slice.tree));
-      // 存盘对话框被取消了：别顺手把这一盘关掉，让用户自己再选一次
-      if (!saved) return;
-      get().patchBoard(id, { filePath: saved, dirty: false });
-      get().toast('已保存到 ' + saved, 'success');
+      // 存进棋谱馆而不是弹系统对话框：跟存盘按钮一个去处，关掉之后在馆里还找得回来
+      try {
+        const rec = await putInLibrary(slice);
+        get().patchBoard(id, { record: { id: rec.id, title: rec.title }, dirty: false });
+        get().toast(`已存入棋谱馆：${rec.title}`, 'success');
+      } catch (e) {
+        get().toast('存进棋谱馆失败：' + (e instanceof Error ? e.message : String(e)), 'error');
+        return;
+      }
     }
     set({ pendingClose: null, dialog: null });
     if (p.scope === 'one') get().closeBoardTab(p.ids[0], true);
@@ -1899,6 +1946,59 @@ export const useStore = create<AppStore>((set, get) => ({
     // 第一次打开时先把标签建起来，否则浏览器栏是空的，用户还得再点一次新建
     if (v && get().tabs.length === 0) set(openTab(get().tabs, makeTab('about:blank'), get().activeTabId));
     persistLayout(get());
+  },
+
+  setLibraryPage(v) {
+    set({ libraryPage: v });
+  },
+
+  /**
+   * 保存进棋谱馆。
+   *
+   * 存过一次的那盘记着馆里的编号，再按保存就是更新它（标题也不动，用户在馆里改过名就留着他改的）；
+   * 没存过的按"黑 对 白 日期"起标题，文件名在那边按标题挑一个不撞的。
+   * 存好之后不再走系统对话框：要存成散装文件、存到别处，用另存为。
+   */
+  async saveToLibrary() {
+    const board = get().activeBoard;
+    try {
+      const rec = await putInLibrary(get());
+      // 存这一下的工夫里可能已经切到别的盘上了：标题要落在当初那一盘上
+      get().patchBoard(board, {
+        record: { id: rec.id, title: rec.title },
+        dirty: false
+      });
+      get().toast(`已存入棋谱馆：${rec.title}`, 'success');
+    } catch (e) {
+      get().toast('存进棋谱馆失败：' + (e instanceof Error ? e.message : String(e)), 'error');
+    }
+  },
+
+  /** 另存为：存成散装 .sgf。想给别的程序一份、想放进别的目录时用它。 */
+  async saveAsFile() {
+    const s = get();
+    const info = infoFromTree(s.tree);
+    const name = s.filePath ?? suggestSgfName(info);
+    const saved = await window.api.files.saveSgf(name, serializeSgf(s.tree));
+    if (!saved) return;
+    get().patchBoard(get().activeBoard, { filePath: saved, dirty: false });
+    get().toast('已另存为 ' + saved, 'success');
+  },
+
+  async openRecord(id) {
+    const entry = await window.api.library.get(id);
+    if (!entry) {
+      get().toast('这一条在棋谱馆里找不到了，可能已经被删掉', 'error');
+      return;
+    }
+    get().loadSgf(entry.content);
+    // loadSgf 可能另开了标签（手里那盘动过就不冲掉它），所以写在"现在这一盘"上
+    get().patchBoard(get().activeBoard, {
+      record: { id: entry.id, title: entry.title },
+      filePath: null,
+      dirty: false
+    });
+    get().setLibraryPage(false);
   },
 
   setSplit(v, axis) {

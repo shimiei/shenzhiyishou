@@ -13,6 +13,8 @@ export function useShortcuts(): void {
     const onKey = (e: KeyboardEvent): void => {
       const s = useStore.getState();
       if (isTyping(e.target)) return;
+      // 棋谱馆那一页盖在上面时，快捷键不该再去动看不见的那盘棋：改了看不见，回来还莫名其妙
+      if (s.libraryPage) return;
       const ctrl = e.ctrlKey || e.metaKey;
 
       if (ctrl && e.key.toLowerCase() === 'z') {

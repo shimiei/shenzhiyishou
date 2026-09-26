@@ -25,6 +25,8 @@ export interface SessionBoard {
   dirty: boolean;
   game: GameConfig;
   finished: string | null;
+  /** 这一盘存在棋谱馆里的哪一条。版本 1 没有这一栏。 */
+  record?: { id: string; title: string } | null;
 }
 
 export interface Session {
@@ -33,7 +35,12 @@ export interface Session {
   boards: SessionBoard[];
 }
 
-export const SESSION_VERSION = 1;
+/**
+ * 会话版本。2 比 1 多记了"这一盘对应棋谱馆里的哪一条"。
+ * 读的时候 1 与 2 都认：升级一次就把用户正开着的那几盘丢掉，是最不能接受的一种坏。
+ */
+export const SESSION_VERSION = 2;
+const READABLE_VERSIONS = [1, 2];
 
 export function toSession(tabs: BoardTab[], activeId: string): Session {
   return {
@@ -47,7 +54,8 @@ export function toSession(tabs: BoardTab[], activeId: string): Session {
       filePath: t.slice.filePath,
       dirty: t.slice.dirty,
       game: { ...t.slice.game },
-      finished: t.slice.finished
+      finished: t.slice.finished,
+      record: t.slice.record
     }))
   };
 }
@@ -60,7 +68,7 @@ export function toSession(tabs: BoardTab[], activeId: string): Session {
 export function fromSession(raw: unknown): { tabs: BoardTab[]; activeId: string } | null {
   if (!raw || typeof raw !== 'object') return null;
   const s = raw as Partial<Session>;
-  if (s.version !== SESSION_VERSION) return null;
+  if (typeof s.version !== 'number' || !READABLE_VERSIONS.includes(s.version)) return null;
   if (!Array.isArray(s.boards) || s.boards.length === 0) return null;
 
   const tabs: BoardTab[] = [];
@@ -75,6 +83,10 @@ export function fromSession(raw: unknown): { tabs: BoardTab[]; activeId: string 
       continue;
     }
     const base = emptySlice({ game: { ...DEFAULT_GAME, ...(b.game ?? {}) } });
+    const record =
+      b.record && typeof b.record === 'object' && typeof b.record.id === 'string' && b.record.id
+        ? { id: b.record.id, title: typeof b.record.title === 'string' ? b.record.title : '' }
+        : null;
     tabs.push({
       id: typeof b.id === 'string' && b.id ? b.id : newBoardId(),
       note: typeof b.note === 'string' ? b.note : '',
@@ -84,7 +96,8 @@ export function fromSession(raw: unknown): { tabs: BoardTab[]; activeId: string 
         current: nodeAtPath(tree, Array.isArray(b.path) ? b.path : []),
         filePath: typeof b.filePath === 'string' && b.filePath ? b.filePath : null,
         dirty: Boolean(b.dirty),
-        finished: typeof b.finished === 'string' ? b.finished : null
+        finished: typeof b.finished === 'string' ? b.finished : null,
+        record
       }
     });
   }

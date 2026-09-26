@@ -30,6 +30,11 @@ export interface BoardSlice {
   future: GameTree[];
   filePath: string | null;
   dirty: boolean;
+  /**
+   * 这一盘存在棋谱馆里的哪一条（标题也带一份，标签和标题栏不用为了显示去问一次磁盘）。
+   * 存过一次之后按保存就是更新它，不会再攒出一堆同名的。
+   */
+  record: { id: string; title: string } | null;
   hint: Advice | null;
   /**
    * 这一盘手动指定的行棋方，null 表示按棋谱数。
@@ -66,6 +71,7 @@ export const BOARD_KEYS = [
   'future',
   'filePath',
   'dirty',
+  'record',
   'hint',
   'turnOverride',
   'game',
@@ -124,6 +130,7 @@ export function emptySlice(opts: { size?: number; komi?: number; game?: GameConf
     future: [],
     filePath: null,
     dirty: false,
+    record: null,
     hint: null,
     turnOverride: null,
     game: { ...(opts.game ?? DEFAULT_GAME) },
@@ -158,8 +165,8 @@ export function freshBoard(opts?: { size?: number; komi?: number; game?: GameCon
 
 /**
  * 复制一盘棋：整棵棋谱连着分支克隆出来，落点跟着原盘走。
- * 副本不再指向原文件（保存时另存一份，不会盖掉原件），撤销历史不带过去；
- * 对弈方式退回手动，复制出来是拿来研究的，不该一开就自己下起来。
+ * 副本不再指向原文件、也不再指着馆里的那一条（保存时另存一份，不会盖掉原件），
+ * 撤销历史不带过去；对弈方式退回手动，复制出来是拿来研究的，不该一开就自己下起来。
  * 复盘结果跟棋谱走：cloneTree 保住了节点号，所以那批评点仍然对得上。
  */
 export function cloneSlice(src: BoardSlice): BoardSlice {
@@ -170,8 +177,9 @@ export function cloneSlice(src: BoardSlice): BoardSlice {
     past: [],
     future: [],
     filePath: null,
-    // 原件有内容（存过盘，或者改动过）的话，副本也算“还没存过”
-    dirty: base.dirty || base.filePath !== null,
+    record: null,
+    // 原件有内容（存过盘、进过馆，或者改动过）的话，副本也算“还没存过”
+    dirty: base.dirty || base.filePath !== null || base.record !== null,
     game: { ...base.game, mode: 'manual' },
     autoReturn: 'manual',
     analysis: null,
@@ -228,10 +236,10 @@ export function nthBoard(tabs: BoardTab[], n: number): string {
   return tabs[n - 1]?.id ?? '';
 }
 
-/** 标签上写什么：存过盘用文件名，没存过用说明（“副本”），都没有就写未命名对局。 */
+/** 一盘棋在标签上叫什么：馆里的标题 > 文件名 > 自己起的说明 > 未命名。 */
 export function boardTitle(tab: BoardTab, max = 16): string {
   const base = tab.slice.filePath ? tab.slice.filePath.split(/[\\/]/).pop() || '' : '';
-  const text = base || tab.note || '未命名对局';
+  const text = tab.slice.record?.title || base || tab.note || '未命名对局';
   return text.length > max ? text.slice(0, max - 1) + '…' : text;
 }
 
@@ -251,12 +259,12 @@ export function hasUnsaved(tab: BoardTab): boolean {
 
 /** 悬停提示：路数、贴目、手数、对弈方式，一眼看清这是哪一盘。 */
 export function boardTooltip(tab: BoardTab): string {
-  const { tree, current, game, filePath, dirty } = tab.slice;
+  const { tree, current, game, filePath, record, dirty } = tab.slice;
   const size = propNum(tree, tree.root, 'SZ', 19);
   const komi = propNum(tree, tree.root, 'KM', 7.5);
   const ply = moveNumberAt(tree, current);
   const mode = game.mode === 'ai-vs-ai' ? '机机对局' : game.mode === 'vs-ai' ? '人机对局' : '手动对局';
-  const head = filePath || boardTitle(tab, 40);
+  const head = record ? `棋谱馆：${record.title}` : filePath || boardTitle(tab, 40);
   return `${head}\n${size} 路 · 贴 ${komi} 目 · 第 ${ply} 手\n${mode}${dirty ? ' · 有改动没保存' : ''}`;
 }
 

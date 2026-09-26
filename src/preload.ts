@@ -42,9 +42,16 @@ const api: Api = {
   },
   library: {
     list: () => ipcRenderer.invoke(CH.libraryList),
+    get: (id: string) => ipcRenderer.invoke(CH.libraryGet, id),
     save: (entry: { meta: Partial<RecordMeta>; content: string; id?: string }) => ipcRenderer.invoke(CH.librarySave, entry),
-    get: (id: string) => ipcRenderer.invoke('library:get', id),
-    delete: (id: string) => ipcRenderer.invoke(CH.libraryDelete, id)
+    delete: (ids: string[]) => ipcRenderer.invoke(CH.libraryDelete, ids),
+    update: (id: string, patch: { title?: string; tags?: string[] }) => ipcRenderer.invoke(CH.libraryUpdate, id, patch),
+    export: (ids: string[], dir?: string) => ipcRenderer.invoke(CH.libraryExport, ids, dir),
+    scan: () => ipcRenderer.invoke(CH.libraryScan),
+    adopt: (items: Array<{ file: string; meta: Partial<RecordMeta> }>) => ipcRenderer.invoke(CH.libraryAdopt, items),
+    chooseDir: () => ipcRenderer.invoke(CH.libraryChooseDir),
+    setDir: (dir: string, move: boolean) => ipcRenderer.invoke(CH.librarySetDir, dir, move),
+    reveal: (id?: string) => ipcRenderer.invoke(CH.libraryReveal, id)
   },
   settings: {
     get: () => ipcRenderer.invoke(CH.settingsGet),

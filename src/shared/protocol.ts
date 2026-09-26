@@ -29,8 +29,16 @@ export const CH = {
   filesSaveText: 'files:saveText',
 
   libraryList: 'library:list',
+  libraryGet: 'library:get',
   librarySave: 'library:save',
   libraryDelete: 'library:delete',
+  libraryUpdate: 'library:update',
+  libraryExport: 'library:export',
+  libraryScan: 'library:scan',
+  libraryAdopt: 'library:adopt',
+  libraryChooseDir: 'library:chooseDir',
+  librarySetDir: 'library:setDir',
+  libraryReveal: 'library:reveal',
 
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
@@ -245,7 +253,8 @@ export interface AppInfo {
   userDataPath: string;
   bundledModelsDir: string;
   userModelsDir: string;
-  recordsDir: string;
+  /** 棋谱馆目录（用户自己挑的，没挑过就是默认那个）。 */
+  libraryDir: string;
   logsDir: string;
   enginesAvailable: BackendName[];
   cpu: { model: string; cores: number; threads: number };
@@ -288,10 +297,30 @@ export interface Api {
     saveText(defaultName: string, content: string): Promise<string | null>;
   };
   library: {
-    list(): Promise<RecordMeta[]>;
-    save(entry: { meta: Partial<RecordMeta>; content: string; id?: string }): Promise<RecordMeta>;
+    /** 馆里有哪些棋谱，以及这个馆在哪个文件夹。 */
+    list(): Promise<{ dir: string; records: RecordMeta[] }>;
     get(id: string): Promise<RecordEntry | null>;
-    delete(id: string): Promise<void>;
+    /** 存一份。给了 id 就是更新原来那一条（文件名不动）。 */
+    save(entry: { meta: Partial<RecordMeta>; content: string; id?: string }): Promise<RecordMeta>;
+    /** 删几条，返回真的删掉了几条。 */
+    delete(ids: string[]): Promise<number>;
+    /** 改标题或标签：只动索引，不动磁盘上的文件名。 */
+    update(id: string, patch: { title?: string; tags?: string[] }): Promise<RecordMeta | null>;
+    /** 导出到别的文件夹。不给 dir 就弹一个选文件夹的对话框；返回的 dir 为 null 表示用户取消了。 */
+    export(
+      ids: string[],
+      dir?: string
+    ): Promise<{ dir: string | null; exported: number; skipped: number; names: string[] }>;
+    /** 扫一遍目录：哪些文件还没进索引（连正文带回来），索引里哪些文件不见了。 */
+    scan(): Promise<{ dir: string; added: Array<{ file: string; content: string }>; missing: string[] }>;
+    /** 把扫出来的几份写进索引，返回收编了几份。 */
+    adopt(items: Array<{ file: string; meta: Partial<RecordMeta> }>): Promise<number>;
+    /** 弹一个"选文件夹"的对话框，返回选中的路径（取消为 null）。搬不搬由界面再问一句。 */
+    chooseDir(): Promise<string | null>;
+    /** 换棋谱馆目录。move 为真就把现有的棋谱一起搬过去。 */
+    setDir(dir: string, move: boolean): Promise<{ dir: string; moved: number; failed: number }>;
+    /** 在资源管理器里打开棋谱馆目录；给了 id 就选中那一份。 */
+    reveal(id?: string): Promise<void>;
   };
   settings: {
     get(): Promise<AppSettings>;

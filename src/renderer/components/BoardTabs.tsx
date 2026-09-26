@@ -32,7 +32,9 @@ export function BoardTabs(): React.ReactElement | null {
     reviewRunning: useStore((s) => s.reviewRunning),
     game: useStore((s) => s.game),
     tree: useStore((s) => s.tree),
-    current: useStore((s) => s.current)
+    current: useStore((s) => s.current),
+    // 存进棋谱馆之后标签上要立刻改叫馆里的标题，不能等切走再切回来
+    record: useStore((s) => s.record)
   };
   const activateBoard = useStore((s) => s.activateBoard);
   const closeBoardTab = useStore((s) => s.closeBoardTab);

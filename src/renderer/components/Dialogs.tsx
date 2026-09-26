@@ -376,67 +376,6 @@ function ModelsDialog({ onClose }: { onClose: () => void }): React.ReactElement 
   );
 }
 
-function LibraryDialog({ onClose }: { onClose: () => void }): React.ReactElement {
-  const [items, setItems] = useState<Awaited<ReturnType<typeof window.api.library.list>>>([]);
-  const loadSgf = useStore((s) => s.loadSgf);
-  const toast = useStore((s) => s.toast);
-  const refresh = async (): Promise<void> => setItems(await window.api.library.list());
-  useEffect(() => {
-    void refresh();
-  }, []);
-
-  return (
-    <Shell title="棋谱库" wide onClose={onClose}>
-      {items.length === 0 ? (
-        <div className="empty">棋谱库还是空的。对局结束后点“存入棋谱库”，就会存到这里。</div>
-      ) : (
-        <div className="lib-list">
-          {items.map((it) => (
-            <div key={it.id} className="lib-item">
-              <span className="t">{it.title}</span>
-              <div className="row">
-                <button
-                  className="btn sm"
-                  onClick={async () => {
-                    const full = await window.api.library.get(it.id);
-                    if (full) {
-                      loadSgf(full.content);
-                      onClose();
-                    }
-                  }}
-                >
-                  打开
-                </button>
-                <button
-                  className="btn sm danger"
-                  onClick={async () => {
-                    await window.api.library.delete(it.id);
-                    toast('已删除', 'success');
-                    void refresh();
-                  }}
-                >
-                  删除
-                </button>
-              </div>
-              <div className="meta">
-                <span>
-                  {it.blackName || '黑'} 对 {it.whiteName || '白'}
-                </span>
-                <span>{it.result || '结果未记'}</span>
-                <span>{it.date || ''}</span>
-                <span>
-                  {it.size} 路 {it.moves} 手
-                </span>
-                <span>{new Date(it.savedAt).toLocaleString('zh-CN')}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Shell>
-  );
-}
-
 /**
  * 复盘窗口：左边是整局的评点，右边跟着看选中的那一手。
  *
@@ -897,6 +836,8 @@ function SettingsDialog({ onClose }: { onClose: () => void }): React.ReactElemen
   const toast = useStore((s) => s.toast);
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [visionKey, setVisionKey] = useState(settings.vision.apiKey);
+  // 棋谱馆目录是主进程按设置算出来的，不在这份 draft 里，改完就地记一份显示
+  const [dir, setDir] = useState(info?.libraryDir ?? '');
 
   const commit = async (): Promise<void> => {
     await setSettings({ ...draft, vision: { ...draft.vision, apiKey: visionKey } });
@@ -1064,6 +1005,33 @@ function SettingsDialog({ onClose }: { onClose: () => void }): React.ReactElemen
         <input type="password" value={visionKey} onChange={(e) => setVisionKey(e.target.value)} placeholder="sk-…" />
       </div>
 
+      <h4 style={{ margin: '18px 0 8px' }}>棋谱馆</h4>
+      <div className="field">
+        <label>棋谱放在哪个文件夹</label>
+        <div className="row" style={{ gap: 8 }}>
+          <input value={dir} readOnly title={dir} />
+          <button
+            className="btn"
+            onClick={async () => {
+              const next = await window.api.library.chooseDir();
+              if (!next) return;
+              /*
+               * 这里不搬东西：换目录是棋谱馆那一页里的事，那儿才说清"搬不搬、搬几份"。
+               * 设置里只换这个位置，原来那些棋谱还留在老地方，之后到棋谱馆里按"扫描"再收进来。
+               */
+              await window.api.library.setDir(next, false);
+              setDir(next);
+              toast('棋谱馆已换到这个文件夹。原来那些棋谱还在老地方，要用的话到棋谱馆里按“扫描”收进来', 'info');
+            }}
+          >
+            更换目录
+          </button>
+          <button className="btn ghost" onClick={() => void window.api.library.reveal()} disabled={!dir}>
+            打开目录
+          </button>
+        </div>
+      </div>
+
       <h4 style={{ margin: '18px 0 8px' }}>关于本机</h4>
       <div className="small faint" style={{ lineHeight: 1.9 }}>
         {info ? (
@@ -1075,8 +1043,6 @@ function SettingsDialog({ onClose }: { onClose: () => void }): React.ReactElemen
             引擎后端：{info.enginesAvailable.join('、') || '未找到'}
             <br />
             网络目录：{info.userModelsDir}
-            <br />
-            棋谱库目录：{info.recordsDir}
           </>
         ) : (
           '读取中…'
@@ -1226,8 +1192,6 @@ export function DialogsHost({ snapshot }: { snapshot: AnalysisSnapshot | null })
       return <GameInfoDialog onClose={close} />;
     case 'models':
       return <ModelsDialog onClose={close} />;
-    case 'library':
-      return <LibraryDialog onClose={close} />;
     case 'score':
       return <ScoreDialog onClose={close} />;
     case 'review':
