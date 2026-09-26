@@ -35,6 +35,7 @@ import {
   type Mark,
   type MarkType
 } from '../core/sgf/tree';
+import { labelValue, nextLabel, parseLabel } from '../core/sgf/codec';
 import { adviceLine, colorName, isPassMove, type Advice } from '../core/advice';
 import {
   buildReview,
@@ -1446,7 +1447,19 @@ export const useStore = create<AppStore>((set, get) => ({
     const value = String.fromCharCode(97 + x) + String.fromCharCode(97 + y);
     const node = tree.nodes[current];
     const cur = node.props[key] ?? [];
-    const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
+    /*
+     * 字母标记的值里带着文字（"dd:A"），所以它得按坐标判断有没有：
+     * 直接拿整串比会把同一个点上的 "dd:A" 和 "dd" 当成两回事。
+     * 没冒号的那种（老版本存下来的）也认，读出来文字是空的。
+     */
+    const next =
+      key === 'LB'
+        ? cur.some((v) => parseLabel(v).point === value)
+          ? cur.filter((v) => parseLabel(v).point !== value)
+          : [...cur, labelValue(value, nextLabel(cur))]
+        : cur.includes(value)
+          ? cur.filter((v) => v !== value)
+          : [...cur, value];
     get().commit(setProp(tree, current, key, next.length ? next : null), current);
   },
 

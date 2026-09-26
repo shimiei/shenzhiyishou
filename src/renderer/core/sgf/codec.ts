@@ -79,3 +79,24 @@ export function parseLabel(v: string): { point: string; text: string } {
   if (ci < 0) return { point: v, text: '' };
   return { point: v.slice(0, ci), text: v.slice(ci + 1) };
 }
+
+/** 拼一条 LB 的值：坐标加冒号加文字。SGF 里没有冒号就是"标了位置但没文字"。 */
+export function labelValue(point: string, text: string): string {
+  return `${point}:${text}`;
+}
+
+/**
+ * 摆字母时挑下一个字母：从 A 起找一个这手棋上还没用过的。
+ *
+ * 用"第一个空位"而不是"比现有的都往后一个"：删掉中间某个标记再摆回去时，
+ * 补上那个空位比一路往后排更合手感（摆过 A、C，删掉 A 再摆还是 A）。
+ * 26 个用完就回到 A，不去编双字母：盘上的标记越短越看得清。
+ */
+export function nextLabel(existing: string[]): string {
+  const used = new Set(existing.map((v) => parseLabel(v).text).filter((t) => t.length === 1));
+  for (let i = 0; i < 26; i++) {
+    const ch = String.fromCharCode(65 + i);
+    if (!used.has(ch)) return ch;
+  }
+  return 'A';
+}

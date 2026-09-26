@@ -14,6 +14,7 @@ import { Board, type Candidate } from './components/Board';
 import { useShortcuts } from './hooks/useShortcuts';
 import { infoFromTree, marksAt, moveAtSized, moveNumberAt, pathTo, positionAt, propNum } from './core/sgf/tree';
 import { serializeSgf } from './core/sgf/serialize';
+import { nextLabel } from './core/sgf/codec';
 import {
   DEFAULT_LEFT,
   DEFAULT_RIGHT,
@@ -433,6 +434,13 @@ export function App(): React.ReactElement {
     );
   }
 
+  /*
+   * 字母工具预览用的那个字母：跟真摆下去时挑的是同一个函数，
+   * 不然预览写着 A、落下的却是 B。
+   */
+  const previewLabel =
+    tool === 'label' ? nextLabel(tree.nodes[current]?.props.LB ?? []) : undefined;
+
   const boardClick = (point: number): void => {
     const s = useStore.getState();
     if (tool === 'play') s.play(point);
@@ -520,6 +528,8 @@ export function App(): React.ReactElement {
                 lastMoveMark={settings.lastMoveMark}
                 numbers={numbers}
                 zoom={zoom}
+                tool={tool}
+                previewLabel={previewLabel}
                 onHover={setHover}
                 onPlay={boardClick}
               />

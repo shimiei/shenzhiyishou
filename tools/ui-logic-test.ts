@@ -13,6 +13,7 @@ import { expectStone, isPassPoint, planMirror, pointToPage } from '../src/render
 import { adviceChip, adviceLine, isPassMove, leadText } from '../src/renderer/core/advice';
 import { engineSgfFor } from '../src/renderer/core/sgf/engineSgf';
 import { serializeSgf } from '../src/renderer/core/sgf/serialize';
+import { labelValue, nextLabel, parseLabel } from '../src/renderer/core/sgf/codec';
 import { LAST_MOVE_MARK_OPTIONS } from '../src/renderer/core/board/marks';
 import { endpointHint, parseVisionGrid } from '../src/renderer/core/vision';
 import { visionBody, visionChat, visionPrompt } from '../src/main/vision';
@@ -1021,6 +1022,21 @@ section('最后一手标记：可选样式');
   eq(DEFAULT_SETTINGS.lastMoveMark, 'dot', '默认还是原来那个异色点');
   for (const o of LAST_MOVE_MARK_OPTIONS) ok(o.label.length > 0, '每个样式都有中文名字：' + o.value);
 }
+
+section('字母标记：摆下去的是哪一枚字母');
+  {
+  eq(nextLabel([]), 'A', '空手棋上从 A 开始');
+  eq(nextLabel(['dd:A']), 'B', '摆过 A 就轮到 B');
+  eq(nextLabel(['dd:A', 'pp:B', 'dq:C']), 'D', '按顺序往后排');
+  eq(nextLabel(['dd:A', 'pp:C']), 'B', '中间空出来的补上（A、C 之后是 B）');
+  eq(nextLabel(['dd:A', 'pp:A']), 'B', '同一个字母摆在两处也只算用过一次');
+  eq(nextLabel(['dd']), 'A', '老版本存下来的没文字标记不算占位');
+  eq(nextLabel(['dd:AB']), 'A', '多字母的文字不占一格的位置');
+  eq(nextLabel(Array.from({ length: 26 }, (_, i) => 'a' + String.fromCharCode(97 + i) + ':' + String.fromCharCode(65 + i))), 'A', '26 个用完了回到 A');
+  eq(labelValue('dd', 'A'), 'dd:A', '拼出来的值就是 SGF 里写的样子');
+  eq(parseLabel(labelValue('dd', 'A')).text, 'A', '拼出去再读回来，文字还在');
+  eq(parseLabel('dd').text, '', '没有冒号就是没文字，读出来是空串');
+  }
 
 section('视觉大模型：把正文读成棋盘');
 {

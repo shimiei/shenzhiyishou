@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { BLACK, EMPTY, PASS, WHITE, type LastMoveMark, type Stone } from '../../shared/types';
 import { Position } from '../core/go/position';
-import type { Mark } from '../core/sgf/tree';
+import type { Mark, MarkType } from '../core/sgf/tree';
+import type { Tool } from '../state/store';
 
 export interface Candidate {
   move: string;
@@ -30,6 +31,10 @@ interface BoardProps {
   numbers?: Map<number, number>;
   interactive?: boolean;
   clickable?: boolean;
+  /** 手里拿的是哪件工具。悬停预览按它画：落子画子、摆子画选的颜色、标记画标记。 */
+  tool?: Tool;
+  /** 字母工具预览用的字母：下一个会落下的那个，由外面按当前节点算好传进来。 */
+  previewLabel?: string;
   onPlay?: (point: number) => void;
   onHover?: (point: number | null) => void;
   onToggleDead?: (point: number) => void;
@@ -44,7 +49,95 @@ interface BoardProps {
   fixedBox?: number;
 }
 
+/** 红叉：落子不合法，或者光标底下的子会被拿掉。 */
+function redCross(ctx: CanvasRenderingContext2D, cx: number, cy: number, step: number): void {
+  ctx.strokeStyle = 'rgba(224,92,82,0.75)';
+  ctx.lineWidth = Math.max(1.4, step * 0.05);
+  const r = step * 0.2;
+  ctx.beginPath();
+  ctx.moveTo(cx - r, cy - r);
+  ctx.lineTo(cx + r, cy + r);
+  ctx.moveTo(cx + r, cy - r);
+  ctx.lineTo(cx - r, cy + r);
+  ctx.stroke();
+}
+
 const LETTERS = 'ABCDEFGHJKLMNOPQRSTUVWXYZ';
+
+/**
+ * 画一枚标记（三角、方块、圆、叉、字母、半透明点、双方地域块）。
+ *
+ * 落定在盘上的标记和鼠标悬停时的预览共用这一份：两处各画一套的话，
+ * 预览的样子迟早跟真正落下的不一样，而这种不一致只有用户会先看出来。
+ * color 是这枚标记的颜色（由 contrast 按底下的子是黑是白给定），
+ * cell 是这一点上的棋子颜色，只有字母标记的底衬用得上。
+ */
+function drawMarkShape(
+  ctx: CanvasRenderingContext2D,
+  shape: { type: MarkType; label?: string },
+  cx: number,
+  cy: number,
+  r: number,
+  step: number,
+  color: string,
+  cell: number
+): void {
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = Math.max(1.4, step * 0.052);
+  ctx.beginPath();
+  switch (shape.type) {
+    case 'triangle':
+      ctx.moveTo(cx, cy - r * 1.15);
+      ctx.lineTo(cx + r * 1.05, cy + r * 0.75);
+      ctx.lineTo(cx - r * 1.05, cy + r * 0.75);
+      ctx.closePath();
+      ctx.stroke();
+      break;
+    case 'square':
+      ctx.strokeRect(cx - r, cy - r, r * 2, r * 2);
+      break;
+    case 'circle':
+      ctx.arc(cx, cy, r * 0.95, 0, Math.PI * 2);
+      ctx.stroke();
+      break;
+    case 'cross':
+      ctx.moveTo(cx - r, cy - r);
+      ctx.lineTo(cx + r, cy + r);
+      ctx.moveTo(cx + r, cy - r);
+      ctx.lineTo(cx - r, cy + r);
+      ctx.stroke();
+      break;
+    case 'dim':
+      ctx.globalAlpha = 0.42;
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      break;
+    case 'territoryB':
+      ctx.fillRect(cx - r * 0.7, cy - r * 0.7, r * 1.4, r * 1.4);
+      break;
+    case 'territoryW':
+      ctx.globalAlpha = 0.75;
+      ctx.fillRect(cx - r * 0.7, cy - r * 0.7, r * 1.4, r * 1.4);
+      ctx.globalAlpha = 1;
+      break;
+    case 'label': {
+      const text = shape.label ?? '';
+      ctx.arc(cx, cy, r * 1.15, 0, Math.PI * 2);
+      ctx.fillStyle = cell === BLACK ? 'rgba(255,255,255,0.94)' : 'rgba(255,255,255,0.9)';
+      ctx.fill();
+      ctx.fillStyle = '#1a1d22';
+      ctx.font = `600 ${Math.round(step * 0.44)}px ${getComputedStyle(document.body).fontFamily}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, cx, cy + step * 0.01);
+      break;
+    }
+    default:
+      break;
+  }
+}
 
 // 坐标解析用规则引擎那一份，别在画布这边再抄一遍：
 // 引擎报的着法、界面上的推荐点、棋盘上留下的子都靠它落到同一个交叉点，
@@ -113,6 +206,8 @@ export function Board({
   numbers,
   interactive = true,
   clickable = true,
+  tool = 'play',
+  previewLabel,
   onPlay,
   onHover,
   onToggleDead,
@@ -346,67 +441,10 @@ export function Board({
     }
 
     // 标记
-    ctx.lineWidth = Math.max(1.4, step * 0.052);
     for (const m of marks) {
       const i = m.y * size + m.x;
       const [cx, cy] = at(i);
-      const r = step * 0.2;
-      ctx.strokeStyle = contrast(i);
-      ctx.fillStyle = contrast(i);
-      ctx.beginPath();
-      switch (m.type) {
-        case 'triangle':
-          ctx.moveTo(cx, cy - r * 1.15);
-          ctx.lineTo(cx + r * 1.05, cy + r * 0.75);
-          ctx.lineTo(cx - r * 1.05, cy + r * 0.75);
-          ctx.closePath();
-          ctx.stroke();
-          break;
-        case 'square':
-          ctx.strokeRect(cx - r, cy - r, r * 2, r * 2);
-          break;
-        case 'circle':
-          ctx.arc(cx, cy, r * 0.95, 0, Math.PI * 2);
-          ctx.stroke();
-          break;
-        case 'cross':
-          ctx.moveTo(cx - r, cy - r);
-          ctx.lineTo(cx + r, cy + r);
-          ctx.moveTo(cx + r, cy - r);
-          ctx.lineTo(cx - r, cy + r);
-          ctx.stroke();
-          break;
-        case 'dim':
-          ctx.globalAlpha = 0.42;
-          ctx.beginPath();
-          ctx.arc(cx, cy, r, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.globalAlpha = 1;
-          break;
-        case 'territoryB':
-          ctx.fillRect(cx - r * 0.7, cy - r * 0.7, r * 1.4, r * 1.4);
-          break;
-        case 'territoryW':
-          ctx.globalAlpha = 0.75;
-          ctx.fillRect(cx - r * 0.7, cy - r * 0.7, r * 1.4, r * 1.4);
-          ctx.globalAlpha = 1;
-          break;
-        case 'label': {
-          const text = m.label ?? '';
-          ctx.beginPath();
-          ctx.arc(cx, cy, r * 1.15, 0, Math.PI * 2);
-          ctx.fillStyle = i < position.cells.length && position.cells[i] === BLACK ? 'rgba(255,255,255,0.94)' : 'rgba(255,255,255,0.9)';
-          ctx.fill();
-          ctx.fillStyle = '#1a1d22';
-          ctx.font = `600 ${Math.round(step * 0.44)}px ${getComputedStyle(document.body).fontFamily}`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(text, cx, cy + step * 0.01);
-          break;
-        }
-        default:
-          break;
-      }
+      drawMarkShape(ctx, m, cx, cy, step * 0.2, step, contrast(i), position.cells[i] as Stone);
     }
 
     // 手数
@@ -484,26 +522,46 @@ export function Board({
       }
     }
 
-    // 悬停预览
+    /*
+     * 悬停预览：画的是"这一下会落下什么"，所以得看手里拿的是哪件工具。
+     * 从前这里只有落子一种画法，于是拿着三角、方块也会飘出一颗棋子，
+     * 而且那颗棋子跟着手数走（选着"放白子"、轮黑，飘出来的却是黑子），
+     * 看着就像颜色选不上。空点上的交叉线也要画，不然预览离了格子看不准位置。
+     */
     if (interactive && hover !== null && hover !== undefined && hover >= 0 && hover < size * size) {
       const occupied = position.cells[hover] !== EMPTY;
       const [cx, cy] = at(hover);
-      const legal = !occupied && position.isLegal((3 - position.toPlay) as 1 | 2, hover);
-      if (legal) {
+      const cell = position.cells[hover] as Stone;
+      const ghost = (color: Stone): void => {
         ctx.globalAlpha = 0.42;
-        const sprite = position.toPlay === BLACK ? blackSprite : whiteSprite;
+        const sprite = color === BLACK ? blackSprite : whiteSprite;
         ctx.drawImage(sprite.canvas, cx - sprite.size / 2, cy - sprite.size / 2, sprite.size, sprite.size);
         ctx.globalAlpha = 1;
+      };
+      if (tool === 'play') {
+        const legal = !occupied && position.isLegal((3 - position.toPlay) as 1 | 2, hover);
+        if (legal) ghost(position.toPlay as Stone);
+        else redCross(ctx, cx, cy, step);
+      } else if (tool === 'black' || tool === 'white') {
+        // 摆子：预览跟手里选的颜色走，不跟手数。压在已有的子上就是替换，照样画。
+        ghost(tool === 'black' ? BLACK : WHITE);
+      } else if (tool === 'erase') {
+        // 拿掉子：有点东西可拿才提示，空点上不画东西，免得整盘都是叉
+        if (occupied) redCross(ctx, cx, cy, step);
       } else {
-        ctx.strokeStyle = 'rgba(224,92,82,0.75)';
-        ctx.lineWidth = Math.max(1.4, step * 0.05);
-        const r = step * 0.2;
-        ctx.beginPath();
-        ctx.moveTo(cx - r, cy - r);
-        ctx.lineTo(cx + r, cy + r);
-        ctx.moveTo(cx + r, cy - r);
-        ctx.lineTo(cx - r, cy + r);
-        ctx.stroke();
+        // 标记：预览的就是这一枚标记本身，淡一点表示还没落下
+        ctx.globalAlpha = 0.62;
+        drawMarkShape(
+          ctx,
+          tool === 'label' ? { type: 'label', label: previewLabel } : { type: tool as MarkType },
+          cx,
+          cy,
+          step * 0.2,
+          step,
+          contrast(hover),
+          cell
+        );
+        ctx.globalAlpha = 1;
       }
     }
   }, [
@@ -523,6 +581,8 @@ export function Board({
     showNumbers,
     lastMoveMark,
     interactive,
+    tool,
+    previewLabel,
     preview
   ]);
 
