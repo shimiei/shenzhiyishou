@@ -74,6 +74,37 @@ export function expectStone(size: number, cells: ArrayLike<number>, point: numbe
   return cells[point] === color;
 }
 
+/** 往网页上点了一手之后，从网页上认回来的局面告诉我们什么。 */
+export type ForwardVerdict =
+  /** 点的那一点上有子了：这一下点上了（对手立刻回了一手也算点上了）。 */
+  | 'landed'
+  /** 网页上还是点之前那副样子：这一下没落上。 */
+  | 'unchanged'
+  /** 网页上变了，但变的不是我们点的那一点：点歪了，或者网页那头别人在动。 */
+  | 'elsewhere'
+  /** 认不出来（路数对不上、棋盘没认出来）：这一拍什么都说明不了，接着看下一拍。 */
+  | 'unreadable';
+
+/**
+ * 判这一下点上没有。
+ *
+ * 只看"点的那一点上有没有子"，不要求颜色也对：颜色认错是新旧棋盘上最常见的一种
+ * 误读（悬停高亮、落子动画、旁边那圈阴影都会带偏），拿它判成败会把点上了的说成没点上。
+ * 真要看颜色，那是"网页和这盘是不是同一盘棋"的事，由 planMirror 管。
+ */
+export function judgeForward(
+  size: number,
+  point: number,
+  before: ArrayLike<number>,
+  after: ArrayLike<number>
+): ForwardVerdict {
+  if (after.length !== size * size || before.length !== size * size) return 'unreadable';
+  if (point < 0 || point >= size * size) return 'unreadable';
+  if (after[point] !== EMPTY) return 'landed';
+  if (sameCells(before, after)) return 'unchanged';
+  return 'elsewhere';
+}
+
 export interface GridLike {
   originX: number;
   originY: number;

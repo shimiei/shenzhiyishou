@@ -1,4 +1,7 @@
 import { useThinking, activeWebContentsId, useStore } from '../state/store';
+import { aiSideOf } from '../core/boards/boards';
+import { colorName } from '../core/advice';
+import { BLACK, WHITE } from '../../shared/types';
 import { ScrollRow } from './ScrollRow';
 
 export function Toolbar(): React.ReactElement {
@@ -15,9 +18,11 @@ export function Toolbar(): React.ReactElement {
   const doHint = useStore((s) => s.doHint);
   const aiMoveNow = useStore((s) => s.aiMoveNow);
   const toggleAiVsAi = useStore((s) => s.toggleAiVsAi);
+  const setAiSide = useStore((s) => s.setAiSide);
   const openBoardTab = useStore((s) => s.openBoardTab);
   const duplicateBoard = useStore((s) => s.duplicateBoard);
   const aiVsAi = useStore((s) => s.game.mode === 'ai-vs-ai');
+  const aiSide = useStore((s) => aiSideOf(s.game));
   const toggleAnalysis = useStore((s) => s.toggleAnalysis);
   const toast = useStore((s) => s.toast);
   const analyzing = useStore((s) => s.analyzing);
@@ -142,6 +147,28 @@ export function Toolbar(): React.ReactElement {
         >
           {aiVsAi ? '停机机' : '机机对下'}
         </button>
+        {/*
+          跟"机机对下"是同一件事的两个方向：那边两边都交给 AI，这边只交一边。
+          按同一颗就是收回来（回到辅助模式，AI 一手都不自己走）。
+        */}
+        <div className="seg" title="固定让 AI 执一方：它只走这一方，另一方你下。再点一下同一颗就收回">
+          {([BLACK, WHITE] as const).map((side) => (
+            <button
+              key={side}
+              className={'seg-item' + (aiSide === side ? ' active' : '')}
+              disabled={Boolean(finished) && aiSide !== side}
+              onClick={() => setAiSide(aiSide === side ? null : side)}
+              title={
+                aiSide === side
+                  ? `AI 正执${colorName(side)}，点一下收回（回到辅助模式，AI 不自己落子）`
+                  : `让 AI 执${colorName(side)}：轮到它的时候它自己走，你下${colorName((3 - side) as 1 | 2)}那一方`
+              }
+            >
+              <span className={'stone-dot ' + (side === BLACK ? 'black' : 'white')} />
+              AI 执{colorName(side)}
+            </button>
+          ))}
+        </div>
         <button
           className={'btn' + (analyzing ? ' primary' : '')}
           onClick={() => void toggleAnalysis()}

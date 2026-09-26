@@ -1,6 +1,7 @@
 import { useThinking, useStore } from '../state/store';
 import { canSetTurn, moveNumberAt, positionAt, propNum, turnWithOverride } from '../core/sgf/tree';
 import { adviceChip, colorName } from '../core/advice';
+import { gameModeText } from '../core/boards/boards';
 import { BLACK } from '../../shared/types';
 
 export function StatusBar(): React.ReactElement {
@@ -25,15 +26,6 @@ export function StatusBar(): React.ReactElement {
   const pos = positionAt(tree, current);
   // 摆子的局面没有手数，轮次本来就没定，改起来是直接写棋盘上的 PL（保存、送引擎都认）
   const turnWritable = canSetTurn(tree, current).ok;
-
-  const modeText =
-    game.mode === 'vs-ai'
-      ? game.humanColor === BLACK
-        ? '人机对局 · 你执黑'
-        : '人机对局 · 你执白'
-      : game.mode === 'ai-vs-ai'
-        ? '机机对局'
-        : '辅助模式 · AI 不自己落子';
 
   return (
     <div className="statusbar">
@@ -87,7 +79,7 @@ export function StatusBar(): React.ReactElement {
               : '点一下开机机对局：双方都交给 AI 自动走，随时能停。想生成一盘棋来复盘就用它（M）'
           }
         >
-          {modeText}
+          {gameModeText(game)}
         </button>
       </span>
       {finished ? (

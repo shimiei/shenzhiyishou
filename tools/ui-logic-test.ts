@@ -9,7 +9,7 @@
 import { BLACK, DEFAULT_SETTINGS, PASS, WHITE, type GameTree, type RecordMeta, type SgfProps } from '../src/shared/types';
 import { closeTab, makeTab, openTab, stepTab, tabTitle, type BrowserTab } from '../src/renderer/core/browser/tabs';
 import { normalizeUrl } from '../src/renderer/core/browser/url';
-import { expectStone, isPassPoint, planMirror, pointToPage } from '../src/renderer/core/browser/mirror';
+import { expectStone, isPassPoint, judgeForward, planMirror, pointToPage } from '../src/renderer/core/browser/mirror';
 import { adviceChip, adviceLine, isPassMove, leadText } from '../src/renderer/core/advice';
 import { engineSgfFor } from '../src/renderer/core/sgf/engineSgf';
 import { serializeSgf } from '../src/renderer/core/sgf/serialize';
@@ -67,6 +67,7 @@ import {
 import {
   BOARD_KEYS,
   DEFAULT_GAME,
+  aiSideOf,
   boardBadges,
   boardTitle,
   boardTooltip,
@@ -288,6 +289,18 @@ section('棋盘标签：标题、角标、提示');
   eq(gameModeText(vsAi.slice.game), '人机对局 · 你执白', '状态行那句话跟着执白走');
   eq(gameModeText({ ...DEFAULT_GAME, mode: 'ai-vs-ai' }), '机机对局', '机机那句话');
   eq(gameModeText(DEFAULT_GAME), '辅助模式 · AI 不自己落子', '手动那句话');
+
+  // AI 固定执一方：只有"人机对局"算，而且跟"你执哪一方"正好相反
+  eq(aiSideOf({ ...DEFAULT_GAME, mode: 'vs-ai', humanColor: BLACK }), WHITE, '你执黑的时候 AI 执白');
+  eq(aiSideOf(vsAi.slice.game), BLACK, '你执白的时候 AI 执黑');
+  eq(aiSideOf({ ...DEFAULT_GAME, mode: 'ai-vs-ai' }), null, '机机对局不算固定执一方（两边都归它）');
+  eq(aiSideOf(DEFAULT_GAME), null, '辅助模式不算固定执一方（它一手都不走）');
+  // 界面上一颗"AI 执白"亮着的时候，状态行必须说你执黑，两处说法不能各走各的
+  for (const human of [BLACK, WHITE] as const) {
+    const g = { ...DEFAULT_GAME, mode: 'vs-ai' as const, humanColor: human };
+    const said = gameModeText(g).endsWith('你执黑') ? BLACK : WHITE;
+    eq(3 - said, aiSideOf(g), '状态行说你执哪一方，跟 AI 执哪一方正好互补');
+  }
 
   eq(hasUnsaved(plain), false, '没动过的盘不算未保存');
   eq(hasUnsaved(copy), true, '动过的盘算未保存');
@@ -841,6 +854,35 @@ section('实时截取：认得出网页上多的那一手，认不出就什么�
   eq(expectStone(19, oneMore, 60, WHITE), false, '颜色不对就不算落上');
   eq(expectStone(19, oneMore, 61, BLACK), false, '旁边那点还是空的');
   ok(isPassPoint(PASS) && isPassPoint(-1) && !isPassPoint(60), '停一手不往网页上点');
+}
+
+section('落子核对：点完那一拍到底算不算点上');
+{
+  const empty = new Int8Array(19 * 19);
+  const after = Int8Array.from(empty);
+  after[60] = BLACK;
+
+  eq(judgeForward(19, 60, empty, after), 'landed', '点的那一点上有子就算点上了');
+  // 颜色认错是常有的事（悬停高亮、落子动画带偏），判成败时只认"那一点上有没有子"
+  const misread = Int8Array.from(after);
+  misread[60] = WHITE;
+  eq(judgeForward(19, 60, empty, misread), 'landed', '颜色读反了也算点上了，不能拿它判失败');
+
+  eq(judgeForward(19, 60, empty, empty), 'unchanged', '网页上一点没变就是没点上');
+
+  // 对手趁这一拍回了一手：我们点的那一点上还是有子（就是自己那颗），照样算点上
+  const answered = Int8Array.from(after);
+  answered[61] = WHITE;
+  eq(judgeForward(19, 60, empty, answered), 'landed', '对手立刻回一手，也算我们点上了');
+
+  // 只变了别处、点的这一点还是空的：点歪了（网页挪位时最常见的就是这一种）
+  const shifted = Int8Array.from(empty);
+  shifted[41] = BLACK;
+  eq(judgeForward(19, 60, empty, shifted), 'elsewhere', '网页上变了但不是点的那一点：报点歪了');
+
+  eq(judgeForward(19, 60, empty, new Int8Array(81)), 'unreadable', '这一拍认出的是 9 路，什么都说明不了');
+  eq(judgeForward(19, 60, new Int8Array(81), after), 'unreadable', '上一拍路数不对，同样不算数');
+  eq(judgeForward(19, 19 * 19, empty, after), 'unreadable', '越界的点不给结论');
 }
 
 section('自动落子：交叉点换算成网页坐标');

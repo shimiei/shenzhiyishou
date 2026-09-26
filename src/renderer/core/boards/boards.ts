@@ -243,6 +243,14 @@ export function boardTitle(tab: BoardTab, max = 16): string {
   return text.length > max ? text.slice(0, max - 1) + '…' : text;
 }
 
+/**
+ * AI 固定执哪一方。只有"人机对局"这一档算固定执一方，辅助模式与机机对局都返回 null
+ * （前者 AI 一手都不走，后者两边都归它，都不是"固定执一方"）。
+ */
+export function aiSideOf(game: GameConfig): 1 | 2 | null {
+  return game.mode === 'vs-ai' ? ((3 - game.humanColor) as 1 | 2) : null;
+}
+
 /** 标签上的小角标：这盘上正跑着什么。 */
 export function boardBadges(tab: BoardTab): string[] {
   const out: string[] = [];

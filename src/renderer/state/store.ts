@@ -54,6 +54,7 @@ import { engineSgfFor } from '../core/sgf/engineSgf';
 import { parseSgf } from '../core/sgf/parse';
 import {
   DEFAULT_GAME,
+  aiSideOf,
   boardTitle,
   closeBoard,
   copiedBoard,
@@ -69,7 +70,7 @@ import {
 import { fromSession, toSession } from '../core/boards/session';
 import { Position } from '../core/go/position';
 import { closeTab, makeTab, openTab, stepTab, type BrowserTab } from '../core/browser/tabs';
-import { expectStone, isPassPoint, planMirror, pointToPage } from '../core/browser/mirror';
+import { judgeForward, isPassPoint, planMirror, pointToPage } from '../core/browser/mirror';
 import { imageDataFromUrl } from '../core/cv/image';
 import { recognizeBoard, type GridFit, type ImageBox } from '../core/cv/recognize';
 import {
@@ -252,6 +253,8 @@ interface AppStore {
    * 停了就回到开之前那一档。生成棋谱来复盘，或者想看引擎自己怎么下，用它。
    */
   toggleAiVsAi: () => void;
+  /** 让 AI 固定执一方（另一方归你）；给 null 收回来，回到辅助模式。 */
+  setAiSide: (side: 1 | 2 | null) => void;
   /** 关掉机机对局并回到原来那一档。reason 是给提示用的说法，"下完了"不再多说一句。 */
   stopAiVsAi: (reason: '已停' | '下完了', board?: string) => void;
   /** 让引擎按当前行棋方走一手，走完就停，不接着自动走。 */
@@ -1190,6 +1193,42 @@ export const useStore = create<AppStore>((set, get) => ({
     void get().maybeAiTurn(board);
   },
 
+  /**
+   * 让 AI 固定执一方，另一方归你。跟"机机对下"是同一件事的两个方向：那边两边都交给 AI，
+   * 这边只交一边。给 null 就是收回来，回到辅助模式（AI 一手都不自己走）。
+   */
+  setAiSide(side) {
+    const board = get().activeBoard;
+    const slice = sliceOf(get(), board);
+    if (!slice) return;
+    const { game, finished, tree, current } = slice;
+    if (aiSideOf(game) === side) return;
+    if (side === null) {
+      get().patchBoard(board, { game: { ...game, mode: 'manual' }, hint: null });
+      get().toast('AI 不再自己落子，回到辅助模式', 'info');
+      return;
+    }
+    if (finished) {
+      get().toast('这一局已经结束了，先新建一盘或者打开一份棋谱', 'info');
+      return;
+    }
+    // 双方都停过一手就是对局到头，开了也不会再走，不如把话说明白
+    if (endedByDoublePass(tree, current)) {
+      get().toast('这一局已经下完了（双方都停了手），要再下就新建一盘或者接着摆', 'info');
+      return;
+    }
+    get().patchBoard(board, {
+      game: { ...game, mode: 'vs-ai', humanColor: (3 - side) as 1 | 2 },
+      autoReturn: 'vs-ai',
+      hint: null
+    });
+    get().toast(
+      `AI 执${colorName(side)}：轮到它的时候它自己走，你下另一方的每一手。再点一下这一颗就关掉`,
+      'info'
+    );
+    void get().maybeAiTurn(board);
+  },
+
   stopAiVsAi(reason, board = '') {
     const id = board || get().activeBoard;
     const slice = sliceOf(get(), id);
@@ -2087,6 +2126,13 @@ export const useStore = create<AppStore>((set, get) => ({
       return;
     }
     get().toast('自动落子已开：本程序里落的子会点到网页棋盘上', 'success');
+    /*
+     * 对手在网页上回的那一手要靠实时截取接回来。只开自动落子不开实时截取，
+     * 网页上会越走越多，本地下完一手后再点，点之前那道核对会一直报"对不上"。
+     */
+    if (!get().settings.liveCapture) {
+      get().toast('建议把"实时截取"也打开：网页上对手那一手靠它接回来，只开这一个会越走越对不上', 'info');
+    }
     // 开的时候先试一次，认不出棋盘现在就告诉用户，别等到下了子才发现点不了
     const shot = await shotPage();
     if (typeof shot === 'string') {
@@ -2170,6 +2216,9 @@ export const useStore = create<AppStore>((set, get) => ({
       return false;
     }
     forwarding = true;
+    // 点网页那一下会被 Chromium 当成真人操作，连键盘焦点一起给到网页那一层去。
+    // 先记着焦点原来在谁身上，点完还给它（见 finally）。
+    const back = document.activeElement;
     try {
       const size = propNum(st.tree, st.tree.root, 'SZ', 19);
       const before = await shotPage();
@@ -2210,23 +2259,52 @@ export const useStore = create<AppStore>((set, get) => ({
       }
       await withTimeout(window.api.browser.click(before.id, at.x, at.y), 3000, '点网页没回应');
       lastForwardAt = Date.now();
-      // 点完再截一次核对。两次都对不上就把开关关掉：网页那头可能轮到对手走，
-      // 也可能页面换了、坐标算错了，继续点只会越点越歪。
-      for (let i = 0; i < 2; i++) {
-        await sleep(i === 0 ? 320 : 520);
+      /*
+       * 点完核对这一下到底落上没有。多等几拍：网页那头常常要先跟服务器换一次手，
+       * 落子动画也要几百毫秒，只截一两拍会把已经落上的看成没落上。判据也放宽成
+       * "那一点上有没有子"，不求颜色对（颜色认错是最常见的误读，拿它判成败会误报）。
+       */
+      let unreadable = 0;
+      let elsewhere = false;
+      for (const wait of [300, 500, 800, 1200, 1800]) {
+        await sleep(wait);
         const after = await shotPage();
-        if (typeof after === 'string') continue;
-        if (after.size === size && expectStone(size, after.stones, point, color)) {
+        if (typeof after === 'string' || after.size !== size) {
+          unreadable += 1;
+          continue;
+        }
+        const verdict = judgeForward(size, point, before.stones, after.stones);
+        if (verdict === 'landed') {
           setSync(`已点到网页上：${Position.gtpVertex(point, size)}`, true);
           return true;
         }
+        if (verdict === 'elsewhere') elsewhere = true;
       }
-      await get().setSettings({ autoPlay: false });
-      setSync('点了网页棋盘但没落上，自动落子已经关掉', false);
-      get().toast('这一手没点到网页上，自动落子已关掉：网页那头可能轮到对手走，或者棋盘位置变了', 'error');
+      /*
+       * 核不上不把开关自己关掉。真正拦住"点错棋盘"的是点之前那一道核对（网页必须正好
+       * 停在点之前的局面），那一道不过则一手都不点；点完这一道只是确认，确认不了就把话
+       * 说明白、这一手不再管，下一手接着试。从前这里会把开关关掉，于是网页回得慢一点、
+       * 或者棋盘挪了位认不出来，功能就悄悄停了，用户还以为是自己点错了。
+       */
+      setSync(
+        elsewhere
+          ? '自动落子：网页上多了子，但不是这一手（点歪了，或者网页那头别人在动）'
+          : unreadable === 5
+            ? '自动落子：点了网页棋盘，但核不上（这几拍都没认出网页上的棋盘）'
+            : '自动落子：这一手好像没点到网页上（网页上还是原来的局面）',
+        false
+      );
+      get().toast(
+        elsewhere
+          ? '这一手点到别处去了：网页上多的子不在这一手的位置上。开关还开着，对上了接着点'
+          : '这一手没能核对上：网页那头可能还没画出来，也可能轮到对手在走。开关还开着，下一手再试',
+        'error'
+      );
       return false;
     } finally {
       forwarding = false;
+      // 键盘焦点还回界面（网页那一层拿到焦点，用户的快捷键就打进网页里了）
+      restoreFocus(back);
     }
   }
 }));
@@ -2378,6 +2456,23 @@ function setSync(text: string, ok: boolean): void {
   useStore.setState({ sync: { text, at: Date.now(), ok } });
 }
 
+/**
+ * 把键盘焦点从网页那一层收回界面上。
+ *
+ * 往网页里注入鼠标事件（自动落子点那一手）会让 Chromium 把网页那一层当作正在操作的
+ * 对象，焦点跟着过去，之后用户的快捷键全打进了网页里。原来焦点在哪就还给谁；原来焦点
+ * 就在界面上（点棋盘下棋是这种，焦点在 body 上），就把网页那一层 blur 掉。
+ */
+function restoreFocus(back: Element | null): void {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || active.tagName !== 'WEBVIEW') return;
+  if (back instanceof HTMLElement && back.isConnected && back.tagName !== 'WEBVIEW') {
+    back.focus();
+    if (document.activeElement !== active) return;
+  }
+  active.blur();
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -2442,12 +2537,24 @@ async function shotPage(): Promise<PageShot | string> {
   // 路数按本地这盘给个提示：认得又快又准，真要是对不上（比如网页上是 19 路）
   // 后面的比对会如实报出来，不会拿着错的路数往下算。
   const tree = useStore.getState().tree;
-  const res = recognizeBoard(data, {
-    expectedSize: propNum(tree, tree.root, 'SZ', 19),
-    crop: cropFor(data.width, data.height),
+  const expected = propNum(tree, tree.root, 'SZ', 19);
+  const crop = cropFor(data.width, data.height);
+  let res = recognizeBoard(data, {
+    expectedSize: expected,
+    crop,
     // 开局两边都是空盘，实盘识别该认下这个画面；手动导入那边没这个选项，空盘仍然提醒。
     allowEmpty: true
   });
+  /*
+   * 记住的那块框是会过期的：网页上加了一行手数、弹了条消息、挪了条横幅，棋盘就往下
+   * 或往右挪了一截，照着旧框裁怎么都认不出来（裁出来的画面里棋盘缺一块）。
+   * 这一拍就白瞎了：实时截取会一直报认不出，自动落子更糟，点完核对时认不出来会被
+   * 当成"没点上"。所以旧框认不出来就整幅重认一次，认出来顺手把框换成新的。
+   */
+  if ((!res.ok || !res.diagnostics) && crop) {
+    const full = recognizeBoard(data, { expectedSize: expected, crop: null, allowEmpty: true });
+    if (full.ok && full.diagnostics) res = full;
+  }
   if (!res.ok || !res.diagnostics) {
     // 网格都没找着，多半是棋盘在画面里太小。手动导入那条路会提示"在图上框选棋盘"，
     // 实时截取没有框选这一步，得告诉用户去调分屏或者网页缩放。
