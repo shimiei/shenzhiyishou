@@ -173,23 +173,28 @@ export function App(): React.ReactElement {
   }, [current, tree, activeBoard, settings.analyzeVisits]);
 
   /*
-   * 实时截取：平时每两三秒看一眼网页上的棋盘。间隔不敢再短，截一张加认一次要两三百毫秒，
-   * 而且网页那头落完子常有动画，截太勤容易拍到还没落定的画面。
-   * 自动落子开着的时候跟紧一点（1.2 秒）：两边得一模一样才点得出去，本地落后一手就意味着
-   * 用户这一下会被判成"网页上已经有这一手了"。这时宁可多截几次，让本地尽快跟上。
+   * 实时截取：平时每一两秒看一次目标画面里的棋盘。
+   *
+   * 内置浏览器那一档取帧贵（一次 capturePage 要两三百毫秒），所以 2.5 秒、自动落子开着时
+   * 1.2 秒；外部窗口那一档是视频流抽帧，几毫秒就取一帧，可以跟紧些，让本地尽快跟上对面。
+   * 自动落子开着时两边得一模一样才点得出去，本地落后一手就意味着用户这一下会被判成
+   * "那边已经有这一手了"，所以这时宁可多取几次。
    */
   const liveCapture = settings.liveCapture;
   const autoPlay = settings.autoPlay;
+  const toWindow = settings.captureSource === 'window';
   useEffect(() => {
     if (!liveCapture) return;
+    const idle = toWindow ? 1500 : 2500;
+    const busy = toWindow ? 700 : 1200;
     let timer = 0;
     const tick = (): void => {
-      void useStore.getState().pollBrowser();
-      timer = window.setTimeout(tick, useStore.getState().settings.autoPlay ? 1200 : 2500);
+      void useStore.getState().pollSource();
+      timer = window.setTimeout(tick, useStore.getState().settings.autoPlay ? busy : idle);
     };
-    timer = window.setTimeout(tick, autoPlay ? 1200 : 2500);
+    timer = window.setTimeout(tick, autoPlay ? busy : idle);
     return () => window.clearTimeout(timer);
-  }, [liveCapture, autoPlay]);
+  }, [liveCapture, autoPlay, toWindow]);
 
   // 侧栏切分支时不要残留旧提示
   useEffect(() => {

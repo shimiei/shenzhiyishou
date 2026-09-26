@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import { CH, type AnalyzeRequest, type Api, type AppCommand, type DownloadProgress, type EngineEvent, type GenMoveRequest, type OpenTabRequest, type ReviewRequest, type VisionRequest } from './shared/protocol';
+import { CH, type AnalyzeRequest, type Api, type AppCommand, type DesktopGeom, type DownloadProgress, type EngineEvent, type GenMoveRequest, type OpenTabRequest, type ReviewRequest, type VisionRequest } from './shared/protocol';
 import type { AppSettings, BackendName, RecordMeta } from './shared/types';
 
 function on<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -69,6 +69,14 @@ const api: Api = {
     click: (webContentsId: number, x: number, y: number) => ipcRenderer.invoke(CH.browserClick, webContentsId, x, y),
     openExternal: (url: string) => ipcRenderer.invoke(CH.browserOpenExternal, url),
     onOpenTab: (cb: (req: OpenTabRequest) => void) => on<OpenTabRequest>(CH.browserOpenTab, cb)
+  },
+  desktop: {
+    list: () => ipcRenderer.invoke(CH.desktopList),
+    pick: (win) => ipcRenderer.invoke(CH.desktopPick, win),
+    mark: (m) => ipcRenderer.invoke(CH.desktopMark, m),
+    clearMark: () => ipcRenderer.invoke(CH.desktopClear),
+    clickAt: (p) => ipcRenderer.invoke(CH.desktopClick, p),
+    onGeom: (cb) => on<DesktopGeom>(CH.desktopGeom, cb)
   },
   clip: {
     readText: () => ipcRenderer.invoke(CH.clipReadText),

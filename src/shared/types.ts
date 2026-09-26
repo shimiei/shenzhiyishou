@@ -120,10 +120,28 @@ export interface AppSettings {
   moveNumbers: boolean;
   sound: boolean;
   browserHome: string;
-  /** 实时截取：隔几秒看一眼内置浏览器里的棋盘，把对手刚下的那一手接到谱上。 */
+  /** 实时截取：隔几秒看一眼目标画面里的棋盘，把对手刚下的那一手接到谱上。 */
   liveCapture: boolean;
-  /** 自动落子：程序里落的子顺手点回网页棋盘。默认关，它真的会动到网页里那盘棋。 */
+  /** 自动落子：程序里落的子顺手点到目标棋盘上。默认关，它真的会动到别人的棋盘里。 */
   autoPlay: boolean;
+  /**
+   * 认哪儿的棋盘：内置浏览器里的网页，还是程序外面某个窗口（原生客户端、远程桌面画面）。
+   * 两个来源共用实时截取与自动落子这两套逻辑，只是"截一帧"和"点一下"的落点不一样。
+   */
+  captureSource: 'browser' | 'window';
+  /**
+   * 盯住的那个外部窗口。窗口标题会随对局变（"对局中 3/5"这种），所以除了标题还记进程名：
+   * 下次按进程名找回来，标题只是用来在同一进程的多个窗口里挑更像的那个。
+   */
+  captureWindowTitle: string;
+  captureWindowProc: string;
+  /**
+   * 外部窗口画面里棋盘在哪儿，按画面的比例存（0~1）。
+   * 外部窗口的尺寸随时会变，存像素下次就对不上了；存比例的话，窗口拉大拉小都还认得。
+   */
+  captureCrop: { x: number; y: number; w: number; h: number } | null;
+  /** 落点提示：把"这一手要点哪儿"画成一个环叠在目标窗口上（点之前你能看见它落在哪儿）。 */
+  windowMark: boolean;
   /**
    * 最后一手的标记画成什么样。默认是现在的"异色点"：黑子上画白点、白子上画黑点。
    * 盘上子多的时候一个点不够显眼，所以另给了红点和红三角这类不跟着棋子换色的样式。
@@ -188,6 +206,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   browserHome: 'about:blank',
   liveCapture: false,
   autoPlay: false,
+  captureSource: 'browser',
+  captureWindowTitle: '',
+  captureWindowProc: '',
+  captureCrop: null,
+  windowMark: true,
   lastMoveMark: 'dot',
   reviewVisits: 150,
   recordDir: '',

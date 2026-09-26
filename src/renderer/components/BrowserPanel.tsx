@@ -3,6 +3,7 @@ import { useStore, registerWebview, webContentsIdOf } from '../state/store';
 import { tabTitle, type BrowserTab } from '../core/browser/tabs';
 import { normalizeUrl } from '../core/browser/url';
 import type { SplitAxis } from '../core/layout/panes';
+import { WindowPanel } from './WindowPanel';
 
 interface WebviewElement extends HTMLElement {
   src: string;
@@ -125,6 +126,8 @@ export function BrowserPanel({
   const sync = useStore((s) => s.sync);
   const setLiveCapture = useStore((s) => s.setLiveCapture);
   const setAutoPlay = useStore((s) => s.setAutoPlay);
+  const setCaptureSource = useStore((s) => s.setCaptureSource);
+  const toWindow = settings.captureSource === 'window';
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0] ?? null;
   const activeId = activeTab?.id ?? null;
@@ -214,107 +217,140 @@ export function BrowserPanel({
 
   return (
     <div className="browser-pane">
-      <div className="browser-tabs">
-        {tabs.map((t) => (
-          <div
-            key={t.id}
-            className={'browser-tab' + (t.id === activeId ? ' active' : '')}
-            onClick={() => activateTab(t.id)}
-            onAuxClick={(e) => {
-              // 中键关标签，浏览器的老习惯
-              if (e.button === 1) {
-                e.preventDefault();
-                closeBrowserTab(t.id);
-              }
-            }}
-            title={t.title || t.url}
-          >
-            <span className="browser-tab-title">{tabTitle(t)}</span>
-            <span
-              className="browser-tab-close"
-              role="button"
-              title="关闭标签"
-              onClick={(e) => {
-                e.stopPropagation();
-                closeBrowserTab(t.id);
-              }}
-            >
-              ×
-            </span>
+      {toWindow ? null : (
+        <>
+          <div className="browser-tabs">
+            {tabs.map((t) => (
+              <div
+                key={t.id}
+                className={'browser-tab' + (t.id === activeId ? ' active' : '')}
+                onClick={() => activateTab(t.id)}
+                onAuxClick={(e) => {
+                  // 中键关标签，浏览器的老习惯
+                  if (e.button === 1) {
+                    e.preventDefault();
+                    closeBrowserTab(t.id);
+                  }
+                }}
+                title={t.title || t.url}
+              >
+                <span className="browser-tab-title">{tabTitle(t)}</span>
+                <span
+                  className="browser-tab-close"
+                  role="button"
+                  title="关闭标签"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeBrowserTab(t.id);
+                  }}
+                >
+                  ×
+                </span>
+              </div>
+            ))}
+            <button className="browser-tab-new" onClick={() => openBrowserTab('about:blank')} title="新建标签页（Ctrl+T）">
+              ＋
+            </button>
           </div>
-        ))}
-        <button className="browser-tab-new" onClick={() => openBrowserTab('about:blank')} title="新建标签页（Ctrl+T）">
-          ＋
-        </button>
-      </div>
-      <div className="browser-bar">
-        <button className="btn icon" disabled={!nav.back} onClick={() => view?.goBack()} title="后退">
-          ‹
-        </button>
-        <button className="btn icon" disabled={!nav.forward} onClick={() => view?.goForward()} title="前进">
-          ›
-        </button>
-        <button className="btn icon" onClick={() => view?.reload()} title="刷新">
-          ⟳
-        </button>
-        <input
-          className="browser-url"
-          value={input}
-          placeholder="输入网址，或者直接输入搜索内容"
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') go(input);
-          }}
-        />
-        <button className="btn sm" onClick={() => go(input)}>
-          前往
-        </button>
-        <button className="btn sm primary" onClick={() => void capture()} title="把当前网页画面里的棋盘识别成棋谱">
-          截取棋谱
-        </button>
-        <div className="seg" title="棋盘和浏览器怎么排：左右分栏是竖着切开，上下分栏是横着切开（网页能占满整条宽度，不再是竖着的一条窄缝）">
-          <button className={'seg-item' + (axis === 'x' ? ' active' : '')} onClick={() => onAxis('x')}>
-            左右
+          <div className="browser-bar">
+            <button className="btn icon" disabled={!nav.back} onClick={() => view?.goBack()} title="后退">
+              ‹
+            </button>
+            <button className="btn icon" disabled={!nav.forward} onClick={() => view?.goForward()} title="前进">
+              ›
+            </button>
+            <button className="btn icon" onClick={() => view?.reload()} title="刷新">
+              ⟳
+            </button>
+            <input
+              className="browser-url"
+              value={input}
+              placeholder="输入网址，或者直接输入搜索内容"
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') go(input);
+              }}
+            />
+            <button className="btn sm" onClick={() => go(input)}>
+              前往
+            </button>
+            <button className="btn sm primary" onClick={() => void capture()} title="把当前网页画面里的棋盘识别成棋谱">
+              截取棋谱
+            </button>
+            <div className="seg" title="棋盘和浏览器怎么排：左右分栏是竖着切开，上下分栏是横着切开（网页能占满整条宽度，不再是竖着的一条窄缝）">
+              <button className={'seg-item' + (axis === 'x' ? ' active' : '')} onClick={() => onAxis('x')}>
+                左右
+              </button>
+              <button className={'seg-item' + (axis === 'y' ? ' active' : '')} onClick={() => onAxis('y')}>
+                上下
+              </button>
+            </div>
+            <button className="btn icon" onClick={() => setBrowserOpen(false)} title="关闭分屏">
+              ✕
+            </button>
+          </div>
+        </>
+      )}
+      <div className="row wrap browser-presets" style={{ padding: '6px 8px 0', gap: 6 }}>
+        <div
+          className="seg"
+          title="认哪儿的棋盘：内置浏览器里的网页，还是程序外面的一个窗口（原生客户端、远程桌面画面）"
+        >
+          <button className={'seg-item' + (toWindow ? '' : ' active')} onClick={() => void setCaptureSource('browser')}>
+            内置浏览器
           </button>
-          <button className={'seg-item' + (axis === 'y' ? ' active' : '')} onClick={() => onAxis('y')}>
-            上下
+          <button className={'seg-item' + (toWindow ? ' active' : '')} onClick={() => void setCaptureSource('window')}>
+            固定窗口
           </button>
         </div>
-        <button className="btn icon" onClick={() => setBrowserOpen(false)} title="关闭分屏">
-          ✕
-        </button>
-      </div>
-      <div className="row wrap browser-presets" style={{ padding: '6px 8px 0', gap: 6 }}>
         <button
           className={'chip' + (settings.liveCapture ? ' active' : '')}
-          title="每隔两三秒看一眼网页上的棋盘，网页上多出来的那一手会自动接到谱上；对不上的时候只提示，不动你的棋"
+          title={
+            toWindow
+              ? '每一两秒看一眼那个窗口里的棋盘，那边多出来的那一手会自动接到谱上；对不上的时候只提示，不动你的棋'
+              : '每隔两三秒看一眼网页上的棋盘，网页上多出来的那一手会自动接到谱上；对不上的时候只提示，不动你的棋'
+          }
           onClick={() => void setLiveCapture(!settings.liveCapture)}
         >
           实时截取
         </button>
         <button
           className={'chip' + (settings.autoPlay ? ' active' : '')}
-          title="本程序里落的子会点回网页棋盘上（点之前先核对两边局面，点完再截一次确认；没落上会自动关掉）"
+          title={
+            toWindow
+              ? '本程序里落的子会真的点到那个窗口上（搬鼠标过去点一下，再把光标和前台还给你；点之前先核对两边局面，被别的窗口盖住就一下都不点）'
+              : '本程序里落的子会点回网页棋盘上（点之前先核对两边局面，点完再截一次确认）'
+          }
           onClick={() => void setAutoPlay(!settings.autoPlay)}
         >
           自动落子
         </button>
         <span className="tb-sep" />
-        {PRESETS.map((p) => (
+        {toWindow ? null : PRESETS.map((p) => (
           <button key={p.label} className="chip" onClick={() => go(p.url)}>
             {p.label}
           </button>
         ))}
-        <span className="small faint" style={{ marginLeft: 'auto' }}>
-          {sync ? <span className={sync.ok ? 'sync-msg ok' : 'sync-msg err'}>{sync.text}</span> : null}
-          {current?.error ? current.error : current?.loading ? '加载中…' : activeTab?.url && activeTab.url !== 'about:blank' ? activeTab.url.slice(0, 64) : '未打开页面'}
-        </span>
+        {toWindow ? (
+          <span className="small faint" style={{ marginLeft: 'auto' }}>
+            固定窗口：只认你选的那一个窗口
+          </span>
+        ) : (
+          <span className="small faint" style={{ marginLeft: 'auto' }}>
+            {sync ? <span className={sync.ok ? 'sync-msg ok' : 'sync-msg err'}>{sync.text}</span> : null}
+            {current?.error ? current.error : current?.loading ? '加载中…' : activeTab?.url && activeTab.url !== 'about:blank' ? activeTab.url.slice(0, 64) : '未打开页面'}
+          </span>
+        )}
       </div>
-      <div className="browser-views">
-        {tabs.map((t) => (
-          <TabView key={t.id} tab={t} active={t.id === activeId} home={settings.browserHome} onRegister={register} />
-        ))}
-      </div>
+      {toWindow ? (
+        <WindowPanel />
+      ) : (
+        <div className="browser-views">
+          {tabs.map((t) => (
+            <TabView key={t.id} tab={t} active={t.id === activeId} home={settings.browserHome} onRegister={register} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -12,7 +12,8 @@ import {
   type RecordMeta,
   type Stone
 } from '../../shared/types';
-import type { AppInfo } from '../../shared/protocol';
+import type { AppInfo, DesktopGeom, DesktopWindow } from '../../shared/protocol';
+import { toPx, usableCrop, type NormBox } from '../../shared/windowMap';
 import { defaultTitle, suggestSgfName } from '../../shared/records';
 import {
   addChild,
@@ -208,6 +209,16 @@ interface AppStore {
   /** 实时截取与自动落子的最后一条状态，显示在浏览器栏上。 */
   sync: { text: string; at: number; ok: boolean } | null;
 
+  /**
+   * 外部窗口这一档的现场：上一拍从窗口画面里认出来的东西（路数、棋子、网格在画面里的位置）。
+   * 界面那层预览靠它把认到的棋盘框和棋子画出来，没有它用户看不到"程序到底看见了什么"。
+   */
+  sourceShot: { size: number; stones: number[]; grid: GridFit; frame: { width: number; height: number }; at: number } | null;
+  /** 目标窗口的位置（主进程隔几百毫秒推一条）。窗口最小化、关掉这类状态也在这里。 */
+  desktopGeom: DesktopGeom | null;
+  /** 这一手该点哪儿（画面像素），标在预览和叠层上。空表示没有要标的。 */
+  markAt: { x: number; y: number; color: 1 | 2 } | null;
+
   /** 复盘：引擎逐手算出来的原始结果，按节点存，整局跑完要好久，中途停下也留着。 */
   reviewPoints: Record<number, ReviewPoint>;
   /**
@@ -343,14 +354,27 @@ interface AppStore {
   setZoom: (v: number) => void;
   setDeadStones: (v: number[]) => void;
   setFinished: (v: string | null) => void;
-  /** 实时截取开关：开着的时候每隔几秒截一次网页，把网页上多出来的那一手接到谱上。 */
+  /** 实时截取开关：开着的时候每隔几秒看一次目标画面，把多出来的那一手接到谱上。 */
   setLiveCapture: (v: boolean) => Promise<void>;
-  /** 自动落子开关：本程序里落的子，同步点到网页棋盘上。 */
+  /** 自动落子开关：本程序里落的子，同步到目标棋盘上（内置浏览器是注入点击，外部窗口是真鼠标）。 */
   setAutoPlay: (v: boolean) => Promise<void>;
-  /** 实时截取的一拍：截图、识别、跟本地局面比，刚好差一手就接上。定时器在 App 里。 */
-  pollBrowser: () => Promise<void>;
-  /** 把一手棋点到网页棋盘上，点完再截一次核对。parentId 是这一手接在哪个节点后面。 */
-  forwardMoveToBrowser: (point: number, color: 1 | 2, parentId: number) => Promise<boolean>;
+  /** 实时截取的一拍：取一帧、识别、跟本地局面比，刚好差一手就接上。定时器在 App 里。 */
+  pollSource: () => Promise<void>;
+  /** 把一手棋落到目标棋盘上，点完再取几帧核对。parentId 是这一手接在哪个节点后面。 */
+  forwardMove: (point: number, color: 1 | 2, parentId: number) => Promise<boolean>;
+
+  /** 换认哪儿的棋盘：内置浏览器，还是程序外面某个窗口。换过去要把对面那套资源收干净。 */
+  setCaptureSource: (src: 'browser' | 'window') => Promise<void>;
+  /** 盯住某个外部窗口（null 就是放开）。抓帧源、几何那条线都在主进程那边接。 */
+  pickDesktopWindow: (win: DesktopWindow | null) => Promise<boolean>;
+  /** 在屏幕上框出棋盘在画面里的哪儿（比例，0~1）；null 就是不用框、整幅找。 */
+  setWindowCrop: (box: NormBox | null) => Promise<void>;
+  /** 落点提示开关：点之前把"要点哪儿"画成一个环叠在目标窗口上。 */
+  setWindowMark: (v: boolean) => Promise<void>;
+  /** 认一下现在这帧画面：认出来顺手记进 sourceShot，界面照着画。 */
+  checkSource: (quiet?: boolean) => Promise<boolean>;
+  /** 把当前这一手（没有就拿天元）标到目标窗口上给自己看一眼，核对对位。 */
+  markCurrent: (ttlMs?: number) => Promise<void>;
 
   /** 复盘：把整局（主线）逐手算一遍。已经算过的那一段会跳过，接着算剩下的。 */
   startReview: () => Promise<void>;
@@ -635,6 +659,9 @@ export const useStore = create<AppStore>((set, get) => ({
   showOwnership: false,
   toasts: [],
   sync: null,
+  sourceShot: null,
+  desktopGeom: null,
+  markAt: null,
 
   async boot() {
     const [settings, info] = await Promise.all([window.api.settings.get(), window.api.app.info()]);
@@ -685,6 +712,28 @@ export const useStore = create<AppStore>((set, get) => ({
       const first = get().tabs[0];
       if (first) set({ activeTabId: first.id });
     }
+    /*
+     * 目标窗口的位置由主进程一直在读。这边存一份：界面要显示"窗口最小化了"这种状态，
+     * 取帧之前也要先问一句窗口还在不在（最小化时抓帧拿不到画面，直接报原因比认不出友好）。
+     */
+    window.api.desktop.onGeom((g) => {
+      const cur = get().desktopGeom;
+      const same =
+        cur !== null &&
+        cur.hwnd === g.hwnd &&
+        cur.win.x === g.win.x &&
+        cur.win.y === g.win.y &&
+        cur.win.w === g.win.w &&
+        cur.win.h === g.win.h &&
+        cur.client.x === g.client.x &&
+        cur.client.y === g.client.y &&
+        cur.client.w === g.client.w &&
+        cur.client.h === g.client.h &&
+        cur.iconic === g.iconic &&
+        cur.visible === g.visible &&
+        cur.gone === g.gone;
+      if (!same) set({ desktopGeom: g });
+    });
     // 开机就把引擎拉起来，不等到用户点了"让引擎落一手"才在背后偷偷启动：
     // 首次运行要针对显卡做 OpenCL 调优，可能十几分钟，这段等待必须看得见
     //（面板上显示启动中，引擎日志里滚出调优进度）。已经跑着就别重复启动。
@@ -1063,7 +1112,7 @@ export const useStore = create<AppStore>((set, get) => ({
     if (!get().analyzing) get().setAnalysis(null);
     // 只有本程序里落的子才往网页上点。实时截取接回来的那一手是从网页上读来的，
     // 再点回去等于自己跟自己下。
-    if (from === 'local') void get().forwardMoveToBrowser(point, color, current);
+    if (from === 'local') void get().forwardMove(point, color, current);
     void get().maybeAiTurn();
   },
 
@@ -1132,7 +1181,7 @@ export const useStore = create<AppStore>((set, get) => ({
       const point = Position.parseVertex(res.move, size);
       const r2 = addMoveNode(now.tree, now.current, color, point, { mainLine: true, source: 'ai' });
       get().patchBoard(id, commitPatch(now, r2.tree, r2.id));
-      if (id === get().activeBoard) void get().forwardMoveToBrowser(point, color, nodeAtRequest);
+      if (id === get().activeBoard) void get().forwardMove(point, color, nodeAtRequest);
       // 引擎替人停的那一手也算：两边连续停一手就是对局到头，接着自动走会一直停下去
       if (endedByDoublePass(r2.tree, r2.id)) {
         if (now.game.mode === 'ai-vs-ai') get().stopAiVsAi('下完了', id);
@@ -2114,8 +2163,8 @@ export const useStore = create<AppStore>((set, get) => ({
       get().toast('实时截取已关', 'info');
       return;
     }
-    get().toast('实时截取已开：网页上多出来的那一手会接到谱上', 'success');
-    void get().pollBrowser();
+    get().toast('实时截取已开：目标画面上多出来的那一手会接到谱上', 'success');
+    void get().pollSource();
   },
 
   async setAutoPlay(v) {
@@ -2125,37 +2174,173 @@ export const useStore = create<AppStore>((set, get) => ({
       get().toast('自动落子已关', 'info');
       return;
     }
-    get().toast('自动落子已开：本程序里落的子会点到网页棋盘上', 'success');
+    const toWindow = get().settings.captureSource === 'window';
+    get().toast(
+      toWindow ? '自动落子已开：本程序里落的子会真的点到那个窗口上' : '自动落子已开：本程序里落的子会点到网页棋盘上',
+      'success'
+    );
     /*
-     * 对手在网页上回的那一手要靠实时截取接回来。只开自动落子不开实时截取，
-     * 网页上会越走越多，本地下完一手后再点，点之前那道核对会一直报"对不上"。
+     * 对手回的那一手要靠实时截取接回来。只开自动落子不开实时截取，目标那头会越走越多，
+     * 本地下完一手后再点，点之前那道核对会一直报"对不上"。
      */
     if (!get().settings.liveCapture) {
-      get().toast('建议把"实时截取"也打开：网页上对手那一手靠它接回来，只开这一个会越走越对不上', 'info');
+      get().toast('建议把"实时截取"也打开：对手那一手靠它接回来，只开这一个会越走越对不上', 'info');
+    }
+    if (toWindow) {
+      // 真点这条路还得先看得见画面、读得到窗口位置，先试一次把话说在前面
+      const g = get().desktopGeom;
+      if (!get().settings.captureWindowTitle && !get().settings.captureWindowProc) {
+        get().toast('还没选要盯的窗口：自动落子要先在下面选一个窗口', 'error');
+        return;
+      }
+      if (g?.iconic) {
+        get().toast('那个窗口最小化了：它得有画面才点得进去', 'error');
+        return;
+      }
     }
     // 开的时候先试一次，认不出棋盘现在就告诉用户，别等到下了子才发现点不了
-    const shot = await shotPage();
+    const shot = await shotSource();
     if (typeof shot === 'string') {
       setSync('自动落子：' + shot, false);
-      get().toast('自动落子开着，但网页棋盘还没认出来：' + shot, 'error');
+      get().toast('自动落子开着，但棋盘还没认出来：' + shot, 'error');
     } else {
-      setSync(`自动落子就绪（网页上是 ${shot.size} 路）`, true);
+      setSync(`自动落子就绪（${toWindow ? '窗口里' : '网页上'}是 ${shot.size} 路）`, true);
     }
   },
 
-  async pollBrowser() {
+  async setCaptureSource(src) {
+    if (get().settings.captureSource === src) return;
+    await get().setSettings({ captureSource: src });
+    set({ sync: null, sourceShot: null, markAt: null });
+    if (src === 'window') {
+      if (!get().browserOpen) get().setBrowserOpen(true);
+      get().toast('改认程序外面的窗口：先选窗口，再把棋盘框一下', 'success');
+      return;
+    }
+    // 放开外部窗口：主进程那边的读位置、落点叠层都收掉，不占着
+    void window.api.desktop.clearMark();
+    void window.api.desktop.pick(null);
+    set({ desktopGeom: null });
+    get().toast('改认内置浏览器里的网页了', 'info');
+  },
+
+  async pickDesktopWindow(win) {
+    const before = get().settings;
+    const changed =
+      (before.captureWindowTitle || before.captureWindowProc) !== '' &&
+      (before.captureWindowTitle !== (win?.title ?? '') || before.captureWindowProc !== (win?.proc ?? ''));
+    const res = await window.api.desktop.pick(win);
+    if (!res.ok) {
+      set({ desktopGeom: null });
+      get().toast(res.error ?? '这个窗口盯不住', 'error');
+      return false;
+    }
+    set({ desktopGeom: null, sourceShot: null, markAt: null });
+    await get().setSettings({
+      captureWindowTitle: win?.title ?? '',
+      captureWindowProc: win?.proc ?? '',
+      // 换的是另一个窗口，原来那块框是按上一个窗口的画面框的，留着只会认错
+      ...(changed ? { captureCrop: null } : {})
+    });
+    if (win) {
+      if (get().settings.captureSource !== 'window') await get().setCaptureSource('window');
+      get().toast(`盯住这个窗口：${win.title}`, 'success');
+    }
+    return true;
+  },
+
+  async setWindowCrop(box) {
+    const clean = usableCrop(box ?? null);
+    await get().setSettings({ captureCrop: clean });
+    set({ sourceShot: null });
+    if (clean) void get().checkSource();
+  },
+
+  async setWindowMark(v) {
+    await get().setSettings({ windowMark: v });
+    if (!v) {
+      void window.api.desktop.clearMark();
+      set({ markAt: null });
+    }
+  },
+
+  async checkSource(quiet) {
+    const shot = await shotSource();
+    if (typeof shot === 'string') {
+      if (!quiet) setSync('认一下：' + shot, false);
+      return false;
+    }
+    const stones = shot.stones.filter((v) => v !== 0).length;
+    set({
+      sourceShot: {
+        size: shot.size,
+        stones: shot.stones,
+        grid: shot.grid,
+        frame: { width: shot.imageWidth, height: shot.imageHeight },
+        at: Date.now()
+      }
+    });
+    setSync(`认到了 ${shot.size} 路，${stones} 颗子`, true);
+    return true;
+  },
+
+  async markCurrent(ttlMs) {
+    const st = get();
+    const shot = await shotSource();
+    if (typeof shot === 'string') {
+      setSync('标一下：' + shot, false);
+      get().toast('标不上：' + shot, 'error');
+      return;
+    }
+    set({
+      sourceShot: {
+        size: shot.size,
+        stones: shot.stones,
+        grid: shot.grid,
+        frame: { width: shot.imageWidth, height: shot.imageHeight },
+        at: Date.now()
+      }
+    });
+    const size = shot.size;
+    // 有刚下的一手就标那一手，没有就标天元：前者是"这一手该点这儿"，后者是拿来对位的
+    const mv = moveAtSized(st.tree, st.current);
+    const point = mv && mv.point !== PASS ? mv.point : Math.floor((size * size - 1) / 2);
+    const color: 1 | 2 = mv ? mv.color : ((colorToPlayAt(st.tree, st.current) ?? BLACK) as 1 | 2);
+    const frame = { width: shot.imageWidth, height: shot.imageHeight };
+    const at = pointToPage(shot.grid, point, frame, frame);
+    if (!at) {
+      setSync('标一下：这一手算不出画面上的位置', false);
+      return;
+    }
+    const ok = await window.api.desktop.mark({ frame, point: at, color, ttlMs });
+    if (!ok) {
+      set({ markAt: null });
+      setSync('标不上：目标窗口最小化了，或者还没读到它的位置', false);
+      get().toast('标不上：那个窗口得在屏幕上、没被最小化', 'error');
+      return;
+    }
+    set({ markAt: { x: at.x, y: at.y, color } });
+    setSync(`标在目标窗口上了：${Position.gtpVertex(point, size)}（${colorName(color)}）`, true);
+    const g = get().desktopGeom;
+    if (g && !g.foreground) {
+      // 点其实不用它在前台（点下去会自己拿前台），标这一下是叠在它上面的，看不见就白标了
+      get().toast('那个窗口现在不在最前面：落点提示可能被别的窗口挡住', 'info');
+    }
+  },
+
+  async pollSource() {
     const st = get();
     if (!st.settings.liveCapture || !st.browserOpen || st.finished) return;
     // 引擎正在想棋、或者刚点出去一手还没落定，这两段时间里两边本来就对不齐
     if (st.thinkingBoard !== null || forwarding) return;
     if (polling) return;
     if (Date.now() - lastForwardAt < 2200) return;
-    // 截图是异步的：开始这一拍时记下是哪一盘，回来发现换了盘就作废，
-    // 不然网页上那一手会接到另一盘的棋谱上
+    // 取帧是异步的：开始这一拍时记下是哪一盘，回来发现换了盘就作废，
+    // 不然目标画面上那一手会接到另一盘的棋谱上
     const board = st.activeBoard;
     polling = true;
     try {
-      const shot = await shotPage();
+      const shot = await shotSource();
       if (typeof shot === 'string') {
         setSync(shot, false);
         return;
@@ -2190,25 +2375,38 @@ export const useStore = create<AppStore>((set, get) => ({
     }
   },
 
-  async forwardMoveToBrowser(point, color, parentId) {
+  async forwardMove(point, color, parentId) {
     const st = get();
     if (!st.settings.autoPlay) return false;
     if (!st.browserOpen) {
-      setSync('自动落子：内置浏览器关着', false);
+      setSync('自动落子：那块分屏关着', false);
+      return false;
+    }
+    /*
+     * 认的是外部窗口的时候，"落子"是真的搬鼠标去点。
+     * 所以这一档要的东西比网页那条多一件：窗口得在屏幕上、读得到它的位置。
+     */
+    const toWindow = st.settings.captureSource === 'window';
+    if (toWindow && !st.settings.captureWindowTitle && !st.settings.captureWindowProc) {
+      setSync('自动落子：还没选要盯的窗口', false);
+      return false;
+    }
+    if (toWindow && st.desktopGeom?.iconic) {
+      setSync('自动落子：那个窗口最小化了，点不进去', false);
       return false;
     }
     if (isPassPoint(point)) {
-      setSync('自动落子：这一手是停一手，得在网页上自己点', false);
+      setSync(`自动落子：这一手是停一手，得在${toWindow ? '那个客户端' : '网页'}上自己点`, false);
       return false;
     }
-    // 这一拍正在截就先等它截完，别把这次点击丢了
+    // 这一拍正在取帧就先等它取完，别把这次点击丢了
     for (let i = 0; i < 20 && (polling || forwarding); i++) await sleep(50);
     if (polling || forwarding) return false;
     // 等这一拍的工夫里可能已经换到别的棋盘上了：那一刻的谱面和现在这盘不是一回事
     if (get().activeBoard !== st.activeBoard) return false;
     /*
      * 要点的这一手是接在 parentId 后面的。那个节点的局面在这段等待里要是变过
-     * （用户摆子、撤了重下），点出去就跟网页上的棋盘对不上了，宁可不点。
+     * （用户摆子、撤了重下），点出去就跟目标那头的棋盘对不上了，宁可不点。
      */
     const now = get();
     if (!now.tree.nodes[parentId] || positionKey(now.tree, parentId) !== positionKey(st.tree, parentId)) {
@@ -2221,16 +2419,16 @@ export const useStore = create<AppStore>((set, get) => ({
     const back = document.activeElement;
     try {
       const size = propNum(st.tree, st.tree.root, 'SZ', 19);
-      const before = await shotPage();
+      const before = await shotSource();
       if (typeof before === 'string') {
         setSync('自动落子：' + before, false);
         return false;
       }
       if (before.size !== size) {
-        setSync(`自动落子：网页上是 ${before.size} 路，这盘是 ${size} 路`, false);
+        setSync(`自动落子：${toWindow ? '窗口里' : '网页上'}是 ${before.size} 路，这盘是 ${size} 路`, false);
         return false;
       }
-      // 点之前先确认网页还停在"这一手之前"：两边对不上说明用户在网页上看的是
+      // 点之前先确认目标那头还停在"这一手之前"：两边对不上说明用户在那儿看的是
       // 另一盘棋，这一下点下去就是往别人的棋盘上落子。
       const plan = planMirror(
         size,
@@ -2240,70 +2438,84 @@ export const useStore = create<AppStore>((set, get) => ({
       );
       if (plan.kind !== 'same') {
         /*
-         * "网页上已经有这一手了"多半不是错，是本地还落后对手那一手：实时截取还没把它接回来，
+         * "那边已经有这一手了"多半不是错，是本地还落后对手那一手：实时截取还没把它接回来，
          * 用户就抢在下面前落子了。所以这句提示要说清接下来该怎么办，而不是只说对不上。
          */
         setSync(
           plan.kind === 'move'
-            ? `自动落子：网页上已经有 ${Position.gtpVertex(plan.point, size)} 这一手了（本地还没接上），${
+            ? `自动落子：${toWindow ? '窗口里' : '网页上'}已经有 ${Position.gtpVertex(plan.point, size)} 这一手了（本地还没接上），${
                 get().settings.liveCapture ? '等它接回来再下这一手' : '打开实时截取才会接回来'
               }`
-            : `自动落子：网页棋盘跟这盘对不上（网页上多 ${plan.missing} 颗，本地多 ${plan.extra} 颗），没点`,
+            : `自动落子：目标棋盘跟这盘对不上（那边多 ${plan.missing} 颗，本地多 ${plan.extra} 颗），没点`,
           false
         );
         return false;
       }
-      const at = pointToPage(
-        before.grid,
-        point,
-        { width: before.viewWidth, height: before.viewHeight },
-        { width: before.imageWidth, height: before.imageHeight }
-      );
+      const frame = { width: before.imageWidth, height: before.imageHeight };
+      const at = pointToPage(before.grid, point, { width: before.viewWidth, height: before.viewHeight }, frame);
       if (!at) {
-        setSync('自动落子：算不出这个交叉点在网页上的位置', false);
+        setSync(`自动落子：算不出这个交叉点在${toWindow ? '窗口画面' : '网页'}上的位置`, false);
         return false;
       }
-      await withTimeout(window.api.browser.click(before.id, at.x, at.y), 3000, '点网页没回应');
+      if (toWindow) {
+        // 真鼠标：主进程那边先把窗口拿到前台、把光标搬过去点一下、再把光标与前台还回来。
+        // 点之前它会自己核对一遍那个点确实属于目标窗口（被别的窗口盖住就一下都不点）。
+        const res = await withTimeout(
+          window.api.desktop.clickAt({ frame, point: at }),
+          9000,
+          '点那个窗口没回应'
+        );
+        if (!res.ok) {
+          setSync('自动落子：' + (res.reason ?? '没点进去'), false);
+          get().toast('这一手没能点进去：' + (res.reason ?? '没点进去'), 'error');
+          return false;
+        }
+        // 点完在这儿留个痕，用户一眼能看见刚才点的是哪一点
+        if (get().settings.windowMark) void window.api.desktop.mark({ frame, point: at, color, ttlMs: 900 });
+        set({ markAt: { x: at.x, y: at.y, color } });
+      } else {
+        await withTimeout(window.api.browser.click(before.id, at.x, at.y), 3000, '点网页没回应');
+      }
       lastForwardAt = Date.now();
       /*
-       * 点完核对这一下到底落上没有。多等几拍：网页那头常常要先跟服务器换一次手，
-       * 落子动画也要几百毫秒，只截一两拍会把已经落上的看成没落上。判据也放宽成
+       * 点完核对这一下到底落上没有。多等几拍：网页那头常常要先跟服务器换一次手、
+       * 客户端那头也有落子动画，只取一两拍会把已经落上的看成没落上。判据也放宽成
        * "那一点上有没有子"，不求颜色对（颜色认错是最常见的误读，拿它判成败会误报）。
        */
       let unreadable = 0;
       let elsewhere = false;
       for (const wait of [300, 500, 800, 1200, 1800]) {
         await sleep(wait);
-        const after = await shotPage();
+        const after = await shotSource();
         if (typeof after === 'string' || after.size !== size) {
           unreadable += 1;
           continue;
         }
         const verdict = judgeForward(size, point, before.stones, after.stones);
         if (verdict === 'landed') {
-          setSync(`已点到网页上：${Position.gtpVertex(point, size)}`, true);
+          setSync(`已点到${toWindow ? '那个窗口上' : '网页上'}：${Position.gtpVertex(point, size)}`, true);
           return true;
         }
         if (verdict === 'elsewhere') elsewhere = true;
       }
       /*
-       * 核不上不把开关自己关掉。真正拦住"点错棋盘"的是点之前那一道核对（网页必须正好
+       * 核不上不把开关自己关掉。真正拦住"点错棋盘"的是点之前那一道核对（目标必须正好
        * 停在点之前的局面），那一道不过则一手都不点；点完这一道只是确认，确认不了就把话
        * 说明白、这一手不再管，下一手接着试。从前这里会把开关关掉，于是网页回得慢一点、
        * 或者棋盘挪了位认不出来，功能就悄悄停了，用户还以为是自己点错了。
        */
       setSync(
         elsewhere
-          ? '自动落子：网页上多了子，但不是这一手（点歪了，或者网页那头别人在动）'
+          ? `自动落子：${toWindow ? '那边' : '网页上'}多了子，但不是这一手（点歪了，或者那儿别人在动）`
           : unreadable === 5
-            ? '自动落子：点了网页棋盘，但核不上（这几拍都没认出网页上的棋盘）'
-            : '自动落子：这一手好像没点到网页上（网页上还是原来的局面）',
+            ? `自动落子：点了，但核不上（这几拍都没认出${toWindow ? '窗口里的' : '网页上的'}棋盘）`
+            : '自动落子：这一手好像没落上（那边还是原来的局面）',
         false
       );
       get().toast(
         elsewhere
-          ? '这一手点到别处去了：网页上多的子不在这一手的位置上。开关还开着，对上了接着点'
-          : '这一手没能核对上：网页那头可能还没画出来，也可能轮到对手在走。开关还开着，下一手再试',
+          ? '这一手点到别处去了：那边多的子不在这一手的位置上。开关还开着，对上了接着点'
+          : '这一手没能核对上：那边可能还没画出来，也可能轮到对手在走。开关还开着，下一手再试',
         'error'
       );
       return false;
@@ -2584,3 +2796,115 @@ async function shotPage(): Promise<PageShot | string> {
     viewHeight: viewSize.height
   };
 }
+
+/**
+ * 外部窗口那条视频流。（界面那一栏挂上 video 时注册进来，摘掉时注销。）
+ *
+ * 为什么用视频流而不是一拍截一次图：窗口抓帧走的是系统的抓帧接口，一次调用要一两百毫秒，
+ * 而"点完核对"这一套要连着取好几帧。开一路流之后，取一帧就是把它画到画布上读像素，几毫秒。
+ */
+let sourceVideo: HTMLVideoElement | null = null;
+
+export function registerSourceVideo(el: HTMLVideoElement | null): void {
+  sourceVideo = el;
+}
+
+let frameCanvas: HTMLCanvasElement | null = null;
+
+/** 从视频流里取一帧。流没起来、窗口最小化、页面还没画，都会是 null。 */
+function grabFrame(): ImageData | null {
+  const v = sourceVideo;
+  if (!v || !v.isConnected || v.readyState < 2 || !v.videoWidth || !v.videoHeight) return null;
+  if (!frameCanvas) frameCanvas = document.createElement('canvas');
+  const c = frameCanvas;
+  if (c.width !== v.videoWidth || c.height !== v.videoHeight) {
+    c.width = v.videoWidth;
+    c.height = v.videoHeight;
+  }
+  // 每帧都要把像素读回来，加这个提示让浏览器别把画布放在 GPU 那边（否则读一次要等同步，很卡）
+  const g = c.getContext('2d', { willReadFrequently: true });
+  if (!g) return null;
+  g.drawImage(v, 0, 0, c.width, c.height);
+  return g.getImageData(0, 0, c.width, c.height);
+}
+
+/** 用户框的那块（比例）换算成这一刻画面的像素框，往外放一圈边距。 */
+function windowCropFor(width: number, height: number): ImageBox | null {
+  const box = usableCrop(useStore.getState().settings.captureCrop);
+  if (!box) return null;
+  return toPx(box, { width, height }, 0.06);
+}
+
+/**
+ * 外部窗口这一档取一帧、认出棋盘。跟 shotPage 一个形状，好让上面那套流程两边通用。
+ *
+ * 认盘用的是同一个 recognizeBoard：网页棋盘和客户端棋盘对它的区别只是画法好不好认。
+ * 路数照本地这盘给个提示；真对不上，后面比对那一步会如实报出来。
+ */
+async function shotWindow(): Promise<PageShot | string> {
+  const st = useStore.getState();
+  const g = st.desktopGeom;
+  if (g?.gone) return '目标窗口已经关掉了';
+  if (g?.iconic) return '目标窗口最小化了，没有画面';
+  if (g && !g.visible) return '目标窗口不在屏幕上';
+  const data = grabFrame();
+  if (!data) return '还没拿到窗口的画面：先在下面选窗口，等画面出来';
+  const tree = st.tree;
+  const expected = propNum(tree, tree.root, 'SZ', 19);
+  const frame = { width: data.width, height: data.height };
+  const crop = windowCropFor(data.width, data.height);
+  let res = recognizeBoard(data, { expectedSize: expected, crop, allowEmpty: true });
+  // 跟网页那条一个道理：框过一次就一直按框认，可框是会过期的（用户换了布局、窗口缩放了），
+  // 认不出来就整幅重认一次，认出来接着走，别把这一拍白扔了。
+  if ((!res.ok || !res.diagnostics) && crop) {
+    const full = recognizeBoard(data, { expectedSize: expected, crop: null, allowEmpty: true });
+    if (full.ok && full.diagnostics) res = full;
+  }
+  if (!res.ok || !res.diagnostics) {
+    return res.diagnostics
+      ? res.message || '没认出窗口里的棋盘'
+      : '认不出窗口里的棋盘：在下面那块画面上把棋盘框一下（框一次，以后一直按这块认）';
+  }
+  const info = {
+    size: res.size,
+    stones: res.stones,
+    grid: res.diagnostics.grid,
+    frame: { width: frame.width, height: frame.height },
+    at: Date.now()
+  };
+  /*
+   * 记下来给界面画：认到的棋盘框、棋子数，用户一眼能看出程序看对了没有。
+   * 只在真变了的时候写 store：实时截取一秒一拍，回回都写就是回回全界面重画，
+   * 而画面通常好几拍才动一次。
+   */
+  const prev = st.sourceShot;
+  const same =
+    prev !== null &&
+    prev.size === info.size &&
+    prev.frame.width === info.frame.width &&
+    prev.frame.height === info.frame.height &&
+    prev.grid.originX === info.grid.originX &&
+    prev.grid.originY === info.grid.originY &&
+    prev.grid.step === info.grid.step &&
+    prev.stones.length === info.stones.length &&
+    prev.stones.every((v, i) => v === info.stones[i]);
+  if (!same) useStore.setState({ sourceShot: info });
+  return {
+    // 外部窗口没有 webContentsId 这一说，给 0
+    id: 0,
+    size: res.size,
+    stones: res.stones,
+    grid: res.diagnostics.grid,
+    imageWidth: data.width,
+    imageHeight: data.height,
+    // 点的时候按画面像素算，主进程那边再换算成屏幕像素
+    viewWidth: data.width,
+    viewHeight: data.height
+  };
+}
+
+/** 取一帧并认出棋盘。看的是内置浏览器还是外部窗口，由设置里的 captureSource 定。 */
+async function shotSource(): Promise<PageShot | string> {
+  return useStore.getState().settings.captureSource === 'window' ? shotWindow() : shotPage();
+}
+

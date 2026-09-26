@@ -53,6 +53,13 @@ export const CH = {
   browserOpenExternal: 'browser:openExternal',
   browserOpenTab: 'browser:openTab',
 
+  desktopList: 'desktop:list',
+  desktopPick: 'desktop:pick',
+  desktopMark: 'desktop:mark',
+  desktopClear: 'desktop:clear',
+  desktopClick: 'desktop:click',
+  desktopGeom: 'desktop:geom',
+
   clipReadText: 'clip:readText',
   clipWriteText: 'clip:writeText',
 
@@ -106,6 +113,53 @@ export type AppCommand =
 export interface OpenTabRequest {
   url: string;
   activate: boolean;
+}
+
+/** 窗口列表里的一项（选"盯住哪个窗口"时用）。 */
+export interface DesktopWindow {
+  /** 抓帧用的源 id（window:句柄:0 这种），交给主进程去开视频流。 */
+  id: string;
+  /** 窗口句柄，主进程读位置、点鼠标都靠它。 */
+  hwnd: number;
+  title: string;
+  /** 进程名。窗口标题会随对局变，认窗口靠它。 */
+  proc: string;
+  iconic: boolean;
+}
+
+/** 目标窗口的实时几何，主进程隔一会儿推一次（落点叠层要跟着窗口走）。 */
+export interface DesktopGeom {
+  hwnd: number;
+  /** 整窗矩形，屏幕物理像素。 */
+  win: { x: number; y: number; w: number; h: number };
+  /** 客户区矩形（去掉标题栏与边框），同样是屏幕物理像素。 */
+  client: { x: number; y: number; w: number; h: number };
+  iconic: boolean;
+  visible: boolean;
+  foreground: boolean;
+  /** 窗口已经没了（关掉了）。 */
+  gone: boolean;
+}
+
+/** 在目标窗口上标一个点，给人看"这一手要点这儿"。frame 与 point 都是抓帧画面的像素。 */
+export interface DesktopMark {
+  frame: { width: number; height: number };
+  point: { x: number; y: number };
+  /** 1 黑 2 白，只影响环的颜色。 */
+  color: 1 | 2;
+  /** 多久之后自己消失（毫秒）。不给就一直留着，直到下一次 mark 或 clear。 */
+  ttlMs?: number;
+}
+
+/** 真点一下的结果。没点成要有说得清的原因。 */
+export interface DesktopClickResult {
+  ok: boolean;
+  /** 没点成的原因（中文，直接可以显示给用户）。 */
+  reason?: string;
+  /** 真的点到的屏幕物理坐标。 */
+  screen?: { x: number; y: number };
+  /** 点完把前台窗口还给本程序了吗。 */
+  focusBack?: boolean;
 }
 
 export interface EngineEvent {
@@ -344,6 +398,19 @@ export interface Api {
     click(webContentsId: number, x: number, y: number): Promise<boolean>;
     openExternal(url: string): Promise<void>;
     onOpenTab(cb: (req: OpenTabRequest) => void): () => void;
+  };
+  /**
+   * 程序外面的窗口：原生客户端、远程桌面画面。
+   * 认的话是抓帧（主进程按窗口开一路视频流），点的话是真鼠标（搬光标过去按一下再还回来）。
+   */
+  desktop: {
+    list(): Promise<DesktopWindow[]>;
+    /** 盯住这个窗口。传 null 就是放开：视频源撤掉、几何不再读、叠层收起来。 */
+    pick(win: DesktopWindow | null): Promise<{ ok: boolean; error?: string }>;
+    mark(m: DesktopMark): Promise<boolean>;
+    clearMark(): Promise<void>;
+    clickAt(p: { frame: { width: number; height: number }; point: { x: number; y: number } }): Promise<DesktopClickResult>;
+    onGeom(cb: (g: DesktopGeom) => void): () => void;
   };
   clip: {
     readText(): Promise<string>;

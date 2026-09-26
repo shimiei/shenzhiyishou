@@ -2341,3 +2341,153 @@ progress::-webkit-progress-value {
 .rev-detail-head {
   font-weight: 600;
 }
+
+/* ---------- 固定窗口：外部窗口的画面 ---------- */
+
+.win-src {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-soft);
+}
+
+.win-src-bar {
+  padding: 6px 8px 4px;
+  gap: 6px;
+  align-items: center;
+}
+
+.win-src-status {
+  margin-left: auto;
+  text-align: right;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 窗口列表：挑一个盯住的客户端。列表本身滚动，别把画面挤没了 */
+.win-src-list {
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+  padding: 4px 0 6px;
+}
+
+.win-src-items {
+  max-height: 190px;
+  overflow: auto;
+  padding: 2px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.win-src-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.win-src-item:hover {
+  border-color: var(--border);
+  background: var(--elevated);
+}
+
+.win-src-item.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.win-src-item-title {
+  font-size: 12px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.win-src-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #0b0d10;
+  overflow: hidden;
+}
+
+/* 画面按比例摆在中间，叠层按同一块算，所以视频用绝对定位而不是 flex 居中 */
+.win-src-video {
+  position: absolute;
+  object-fit: fill;
+  cursor: crosshair;
+  background: #000;
+}
+
+.win-src-overlay {
+  position: absolute;
+  pointer-events: none;
+}
+
+.win-src-frame {
+  position: absolute;
+  border: 1px dashed var(--accent);
+  background: rgba(217, 164, 65, 0.08);
+  border-radius: 3px;
+}
+
+.win-src-board {
+  position: absolute;
+  border: 1px solid rgba(240, 244, 250, 0.7);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.win-src-mark {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  border: 2px solid #14171c;
+  background: #f7f8fa;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5);
+}
+
+.win-src-mark.white {
+  border-color: #f7f8fa;
+  background: #14171c;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45);
+}
+
+.win-src-drag {
+  position: absolute;
+  border: 1px solid var(--blue);
+  background: var(--blue-soft);
+}
+
+.win-src-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.win-src-tip {
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--border-soft);
+  line-height: 1.5;
+}

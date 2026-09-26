@@ -33,7 +33,7 @@ import {
   uniqueFileName
 } from '../src/shared/records';
 import { endpointHint, parseVisionGrid } from '../src/renderer/core/vision';
-import { visionBody, visionChat, visionPrompt } from '../src/main/vision';
+import { boxFromDrag, frameFraction, framePointToScreen, pickFrameRect, toNorm, toPx, usableCrop } from '../src/shared/windowMap';import { visionBody, visionChat, visionPrompt } from '../src/main/vision';
 import {
   buildReview,
   curvePoints,
@@ -1390,6 +1390,91 @@ section('棋谱馆：从棋谱里读出那几栏');
   const setup = metaFromSgf(`(;GM[1]FF[4]SZ[13]AB[dd][pp]AW[pd])`, 'y.sgf', 2);
   eq(setup?.size, 13, '摆子的局面也读得出几路');
   eq(setup?.moves, 0, '摆子不算手数');
+}
+
+section('窗口画面：框、坐标、落点');
+{
+  const frame = { width: 800, height: 600 };
+
+  // 画面里的框存成比例，窗口被拉大拉小都还成立
+  const half = toNorm({ x: 200, y: 150, w: 400, h: 300 }, frame);
+  ok(half !== null, '框得出来');
+  eq(half?.x, 0.25, '左边占四分之一');
+  eq(half?.y, 0.25, '上边占四分之一');
+  eq(half?.w, 0.5, '宽占一半');
+  eq(half?.h, 0.5, '高占一半');
+  eq(toNorm({ x: 0, y: 0, w: 10, h: 10 }, { width: 0, height: 600 }), null, '画面尺寸是 0 就给 null');
+
+  // 换回像素：窗口变成两倍大，框跟着变两倍
+  const grown = toPx(half!, { width: 1600, height: 1200 });
+  eq(grown?.x, 400, '窗口变大后左边跟着走');
+  eq(grown?.w, 800, '宽度也跟着放大');
+  // 外扩是按框自己的大小算的，不是按整个画面
+  const padded = toPx(half!, frame, 0.05);
+  eq(padded?.x, 180, '外扩向左 20 像素（400 的 5%）');
+  eq(padded?.w, 440, '外扩后的宽度');
+  eq(padded?.y, 135, '外扩向上 15 像素（300 的 5%）');
+  // 贴着边的框往外扩，不能扩出画面去
+  const atEdge = toPx({ x: 0, y: 0, w: 0.25, h: 0.25 }, frame, 0.2);
+  eq(atEdge?.x, 0, '贴左边就不往外扩了');
+  eq(atEdge?.y, 0, '贴上边也一样');
+  eq(toPx({ x: 0.1, y: 0.1, w: 0.001, h: 0.001 }, frame), null, '小到一两个像素的框当没框');
+  eq(toPx(half!, { width: 0, height: 0 }), null, '画面尺寸是 0 也给 null');
+
+  // 拖出来的框：反着拖、拖太小
+  const dragged = boxFromDrag({ x: 600, y: 500 }, { x: 200, y: 100 }, frame);
+  eq(dragged?.x, 0.25, '从右下往左上拖也认');
+  eq(dragged?.w, 0.5, '宽对得上');
+  const tiny = boxFromDrag({ x: 100, y: 100 }, { x: 104, y: 104 }, frame);
+  eq(tiny, null, '手一抖拖出四个像素，当没框');
+
+  // 比例框收进 0~1，太小的丢掉
+  eq(usableCrop(null), null, '没框就是没框');
+  eq(usableCrop({ x: 0.1, y: 0.1, w: Number.NaN, h: 0.5 }), null, '坐标不是数就当没框');
+  const overflow = usableCrop({ x: 0.8, y: 0.8, w: 0.5, h: 0.5 });
+  // 1-0.8 在浮点里是 0.19999999999999996，比到小数点后三位就够
+  eq(Number(overflow?.w.toFixed(3)), 0.2, '框超出画面右边就收到边上');
+  eq(Number(overflow?.h.toFixed(3)), 0.2, '下边也一样');
+  const negative = usableCrop({ x: -0.2, y: -0.2, w: 0.5, h: 0.5 });
+  eq(negative?.x, 0, '左边拖出去了收回来');
+  eq(usableCrop({ x: 0, y: 0, w: 0.03, h: 0.5 }), null, '太窄的框不要');
+  eq(usableCrop({ x: 0, y: 0, w: 0.04, h: 0.04 })?.w, 0.04, '刚到下限就留着');
+
+  // 抓到的画面盖住屏幕上哪块矩形：跟整窗比、跟客户区比，谁像算谁
+  const winBox = { x: 100, y: 100, w: 800, h: 640 };
+  const clientBox = { x: 108, y: 131, w: 784, h: 600 };
+  const asClient = pickFrameRect({ width: 784, height: 600 }, winBox, clientBox);
+  eq(asClient.kind, 'client', '画面尺寸像客户区，就按客户区算');
+  eq(asClient.rect.x, 108, '取的是客户区那个矩形');
+  const asWindow = pickFrameRect({ width: 800, height: 640 }, winBox, clientBox);
+  eq(asWindow.kind, 'window', '画面尺寸像整窗，就按整窗算');
+  eq(asWindow.rect.y, 100, '取的是整窗那个矩形');
+  // 远程桌面那种缩小显示：比例一样，还是能认出是哪块
+  const scaled = pickFrameRect({ width: 392, height: 300 }, winBox, clientBox);
+  eq(scaled.kind, 'client', '缩小过的画面按比例还是认得出客户区');
+  // 无边框窗口两个矩形一样，归到整窗，省得两处判断
+  const borderless = { x: 10, y: 20, w: 500, h: 400 };
+  eq(pickFrameRect({ width: 500, height: 400 }, borderless, borderless).kind, 'window', '两个矩形一样时按整窗算');
+
+  // 画面里的点 → 屏幕上的点
+  const same = framePointToScreen({ x: 400, y: 300 }, frame, { x: 100, y: 50, w: 800, h: 600 });
+  eq(same.x, 500, '画面正中间就是矩形正中间');
+  eq(same.y, 350, '纵向同理');
+  const shrunk = framePointToScreen({ x: 400, y: 300 }, frame, { x: 0, y: 0, w: 400, h: 300 });
+  eq(shrunk.x, 200, '画面被缩到一半大，点也跟着缩一半');
+  eq(shrunk.y, 150, '纵坐标一样');
+  const corner = framePointToScreen({ x: 0, y: 0 }, frame, { x: 100, y: 50, w: 800, h: 600 });
+  eq(corner.x, 100, '画面左上角就是矩形左上角');
+  eq(framePointToScreen({ x: 1, y: 1 }, { width: 0, height: 0 }, { x: 7, y: 9, w: 5, h: 5 }).x, 8, '画面尺寸是 0 时不缩放，只平移');
+
+  // 落点提示叠层按这个比例画
+  const mid = frameFraction({ x: 400, y: 300 }, frame);
+  eq(mid.x, 0.5, '点在画面里占一半');
+  eq(mid.y, 0.5, '纵向也一样');
+  const outside = frameFraction({ x: 900, y: -50 }, frame);
+  eq(outside.x, 1, '点跑到画面外就贴边');
+  eq(outside.y, 0, '另一头也一样');
+  eq(frameFraction({ x: 5, y: 5 }, { width: 0, height: 0 }).x, 0, '画面尺寸是 0 时给 0');
 }
 
 console.log(`\n界面逻辑自测：${passed} 项通过，${failed} 项失败`);

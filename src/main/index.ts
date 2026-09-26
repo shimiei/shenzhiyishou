@@ -20,10 +20,30 @@ import {
 } from './library';
 import { cancelDownload, downloadModel, importModel, listModels, openModelsFolder, removeModel } from './models';
 import { availableBackends, backendDir, engineRoot, ensureRuntime, logsDir, modelsDir, tmpDir, userDataRoot } from './paths';
+import {
+  clickPoint,
+  disposeDesktop,
+  hideMark,
+  installDisplayMediaHandler,
+  pickWindow,
+  setGeomSink,
+  setOwnerWindow,
+  showMark,
+  windows as desktopWindows
+} from './desktop';
 import { fitWindow, type Box } from './windowState';
 import { loadSession, saveSession } from './session';
 import { visionChat } from './vision';
-import { CH, type AppCommand, type AppInfo, type DownloadProgress, type EngineEvent, type VisionRequest } from '../shared/protocol';
+import {
+  CH,
+  type AppCommand,
+  type AppInfo,
+  type DesktopMark,
+  type DesktopWindow,
+  type DownloadProgress,
+  type EngineEvent,
+  type VisionRequest
+} from '../shared/protocol';
 import type { AppSettings, BackendName, RecordMeta } from '../shared/types';
 
 // 引擎与网络走 ASCII 路径，避免中文路径在 C++ 引擎里出问题
@@ -177,6 +197,9 @@ function createWindow(): void {
     }
   });
   mainWindow = win;
+  setOwnerWindow(win);
+  // 外部窗口的抓帧授权：界面里 getUserMedia 来要的时候，只有用户选中的那个窗口放行
+  installDisplayMediaHandler(win.webContents.session);
 
   // 记住用户拖出来的尺寸。拖动时 resize/move 会连着来几十次，攒一下再写盘；
   // 关窗前必须立刻补一次，否则最后一次调整会被丢掉。
@@ -565,6 +588,18 @@ function registerIpc(): void {
     await shell.openExternal(url);
   });
 
+  /*
+   * 程序外面那些窗口。抓帧那一步不在 IPC 里：界面自己 getUserMedia，主进程只负责放行
+   * （见 installDisplayMediaHandler）。这里管的是列窗口、盯位置、标落点、真点一下。
+   */
+  ipcMain.handle(CH.desktopList, async (): Promise<DesktopWindow[]> => desktopWindows());
+  ipcMain.handle(CH.desktopPick, async (_e, win: DesktopWindow | null) => pickWindow(win));
+  ipcMain.handle(CH.desktopMark, async (_e, m: DesktopMark) => showMark(m));
+  ipcMain.handle(CH.desktopClear, async () => hideMark());
+  ipcMain.handle(CH.desktopClick, async (_e, p: { frame: { width: number; height: number }; point: { x: number; y: number } }) =>
+    clickPoint(p.frame, p.point)
+  );
+
   ipcMain.handle(CH.clipReadText, () => clipboard.readText());
   ipcMain.handle(CH.clipWriteText, async (_e, text: string) => {
     clipboard.writeText(text);
@@ -615,6 +650,8 @@ if (!gotLock) {
     mkdirSync(tmpDir(), { recursive: true });
     mkdirSync(logsDir(), { recursive: true });
     engine.setSettings(loadSettings() as Partial<AppSettings>);
+    // 目标窗口的位置一变就往界面推一条，界面据此显示窗口状态、叠层据此跟着走
+    setGeomSink((g) => send(CH.desktopGeom, g));
     registerIpc();
     buildMenu();
     createWindow();
@@ -624,6 +661,10 @@ if (!gotLock) {
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
+  });
+
+  app.on('will-quit', () => {
+    disposeDesktop();
   });
 
   app.on('window-all-closed', () => {
