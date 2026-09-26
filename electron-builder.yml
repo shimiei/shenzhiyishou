@@ -7,6 +7,10 @@ directories:
 files:
   - dist/**/*
   - package.json
+  # 跑自测和验收实例时会把几个入口编到 dist 里（tests 的 *.mjs、
+  # main/index.devtest.js），它们只在开发机上用，不该跟着安装包走。
+  - '!dist/*.mjs'
+  - '!dist/main/*.devtest.js'
 extraResources:
   - from: engine
     to: engine

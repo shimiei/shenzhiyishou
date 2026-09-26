@@ -141,7 +141,7 @@ export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCa
             <div className="empty">
               还没有分析数据。
               <br />
-              点上面的「实时分析」开始，或者按 A。
+              点上面的“实时分析”开始，或者按 A。
             </div>
           ) : (
             <div className="candidates">

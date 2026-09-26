@@ -1,7 +1,7 @@
 /**
  * loadsgf 兼容性探针：一次启动，逐个变体问引擎。
  * 要弄清两件事：KataGo 到底接受哪几种摆子写法，以及加载完之后它认为轮谁走。
- * 轮次直接读 showboard 里的 "Next player:"，别拿 kata-analyze 的胜率去推——
+ * 轮次直接读 showboard 里的 "Next player:"，别拿 kata-analyze 的胜率去推，
  * 同一个局面摆子写法稍微一变，胜率会跟着行棋方翻个面，读起来容易反。
  * 用法: node tools/sgf-load-probe.mjs
  */

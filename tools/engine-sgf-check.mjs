@@ -1,7 +1,7 @@
 /**
  * 真引擎复验：把 tools/engine-sgf-cases.ts 造出来的每一份局面喂给 KataGo，问三件事：
  * loadsgf 收不收、盘面对不对、行棋方对不对。
- * 前两件是这次修 bug 的正题——KataGo 只认根节点上的摆子，而且根节点只有摆子时
+ * 前两件是这次修 bug 的正题：KataGo 只认根节点上的摆子，而且根节点只有摆子时
  * 它按让子惯例算白走，所以送进去的 SGF 必须把摆子收进根节点、把轮次写死。
  * 用法: node tools/engine-sgf-check.mjs
  */

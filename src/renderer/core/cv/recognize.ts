@@ -38,6 +38,8 @@ export interface PointStat {
   sat: number;
   value: number;
   margin: number;
+  /** 整圈取样里“无色又不暗”的比例，白子的第二条判法就是看它（底色没彩色时是 0）。 */
+  pale: number;
 }
 
 export interface RecognizeDiagnostics {
@@ -46,6 +48,8 @@ export interface RecognizeDiagnostics {
   backgroundLum: number;
   backgroundSat: number;
   backgroundSource: string;
+  /** 底色有色时启用了“白子掉了色”这条判法（底色没什么彩色时用不了）。 */
+  paleRule: boolean;
   usedCrop: boolean;
   pointStats: PointStat[];
 }
@@ -120,12 +124,22 @@ interface Sample {
   lum: number;
   sat: number;
   n: number;
+  /** 各次取样的亮度与彩度。白子要数“整圈里有多少是无色而亮的”，光看中位数不够。 */
+  lums: number[];
+  sats: number[];
+  /** 各次取样落在哪个像素上，用来把压在棋子上的格线挑出去。 */
+  xs: number[];
+  ys: number[];
 }
 
 function sampleRing(stats: PixelStats, cx: number, cy: number, radius: number, samples = 36): Sample {
   const rs: number[] = [];
   const gs: number[] = [];
   const bs: number[] = [];
+  const lums: number[] = [];
+  const sats: number[] = [];
+  const xs: number[] = [];
+  const ys: number[] = [];
   for (let k = 0; k < samples; k++) {
     const a = (k / samples) * Math.PI * 2;
     const x = Math.round(cx + Math.cos(a) * radius);
@@ -135,6 +149,10 @@ function sampleRing(stats: PixelStats, cx: number, cy: number, radius: number, s
     rs.push(stats.r[i]);
     gs.push(stats.g[i]);
     bs.push(stats.b[i]);
+    lums.push(stats.lum[i]);
+    sats.push(Math.max(stats.r[i], stats.g[i], stats.b[i]) - Math.min(stats.r[i], stats.g[i], stats.b[i]));
+    xs.push(x);
+    ys.push(y);
   }
   const r = medianOf(rs);
   const g = medianOf(gs);
@@ -145,8 +163,38 @@ function sampleRing(stats: PixelStats, cx: number, cy: number, radius: number, s
     b,
     lum: luminance(r, g, b),
     sat: Math.max(r, g, b) - Math.min(r, g, b),
-    n: rs.length
+    n: rs.length,
+    lums,
+    sats,
+    xs,
+    ys
   };
+}
+
+/**
+ * 整圈取样里“无色（彩度低）又不太暗”的像素占多少。
+ *
+ * 白子是一颗有明暗的球：亮处接近纯白，背光那半边能暗到跟木色一个水平，
+ * 只用中位数会被背光半边拖下去。但整圈里绝大多数像素有个共同点：它们没有颜色，
+ * 而棋盘底色（木色）恰恰很有颜色，于是“掉了色”这个特征比亮度可靠得多。
+ *
+ * 格线压在白子上层的客户端（实测就有这种），棋子身上会横过一道彩色的线，
+ * 这一小撮像素既不是棋子本色也不算数，交给 ignore 挑出去。
+ */
+function paleFraction(
+  sample: Sample,
+  satCut: number,
+  lumCut: number,
+  ignore: (x: number, y: number) => boolean
+): number {
+  let hit = 0;
+  let count = 0;
+  for (let i = 0; i < sample.lums.length; i++) {
+    if (ignore(sample.xs[i], sample.ys[i])) continue;
+    count += 1;
+    if (sample.sats[i] < satCut && sample.lums[i] > lumCut) hit += 1;
+  }
+  return count === 0 ? 0 : hit / count;
 }
 
 /** 木色区域检测，返回棋盘色块范围。 */
@@ -214,20 +262,20 @@ function groupCenters(profile: Int32Array, extent: number, minCoverage: number, 
   groups.push(cur);
   const last = profile.length - 1;
   // 贴着选区边缘的那一整块，通常不是棋盘的线，而是选区比棋盘大出来的背景或边框
-  // （实测截图里棋盘四周各多出十来个像素的深色底，会被当成两条「粗线」混进拟合）。
+  // （实测截图里棋盘四周各多出十来个像素的深色底，会被当成两条“粗线”混进拟合）。
   const inner = groups.filter((g) => g[0] > edgeTrim && g[g.length - 1] < last - edgeTrim);
   return inner.map((g) => g.reduce((a, b) => a + b, 0) / g.length);
 }
 
 /**
- * 沿一个方向的「线中心」检测。
+ * 沿一个方向的“线中心”检测。
  *
- * 做法是数每一列里有多少像素算「暗」（对方向翻转后同理数行）。棋盘格线整条贯穿，
+ * 做法是数每一列里有多少像素算“暗”（对方向翻转后同理数行）。棋盘格线整条贯穿，
  * 一列能数到大半的高度，棋子最多只盖住一部分，于是格线列会明显跳出来。
  *
  * 阈值必须相对底色自适应。缩放过的截图里抗锯齿会把同一条棋盘上的线削弱成两档，
  * 实测强线亮度 77、弱线 105、木色底 146；原来固定按底色的 0.66 取，只认得出强线，
- * 结果网格被按「每两条线取一条」拟合，19 路棋盘的线数正好凑成 9，就认成了 9 路。
+ * 结果网格被按“每两条线取一条”拟合，19 路棋盘的线数正好凑成 9，就认成了 9 路。
  */
 function lineCenters(counts: Int32Array, extent: number, edgeTrim: number): number[] {
   return groupCenters(counts, extent, 0.55, edgeTrim);
@@ -360,7 +408,7 @@ function detectGrid(stats: PixelStats, rect: ImageBox, expected: number): GridFi
       uniformity: (cols.uniformity + rows.uniformity) / 2,
       strategy: strat.name
     };
-    // 参与比较的不只是「拟合得多齐」，还有「解释了多少条线」。否则用某个策略
+    // 参与比较的不只是“拟合得多齐”，还有“解释了多少条线”。否则用某个策略
     // 只认出一半的线时，反而因为那半数线排得格外整齐而胜出。
     const explained = (cols.matched + rows.matched) / 2 / 19;
     const score = grid.uniformity * (0.5 + 0.5 * Math.min(1, explained));
@@ -540,6 +588,7 @@ export function recognizeBoard(img: ImageData, opts: RecognizeOptions = {}): Rec
   const pointStats: PointStat[] = new Array(total);
   const lums: number[] = new Array(total);
   const sats: number[] = new Array(total);
+  const samples: Sample[] = new Array(total);
   const radius = grid.step * 0.3;
   for (let y = 0; y < grid.size; y++) {
     for (let x = 0; x < grid.size; x++) {
@@ -547,7 +596,8 @@ export function recognizeBoard(img: ImageData, opts: RecognizeOptions = {}): Rec
       const s = sampleRing(stats, grid.originX + x * grid.step, grid.originY + y * grid.step, radius);
       lums[i] = s.lum;
       sats[i] = s.sat;
-      pointStats[i] = { x, y, r: s.r, g: s.g, b: s.b, lum: s.lum, sat: s.sat, value: EMPTY, margin: 0 };
+      samples[i] = s;
+      pointStats[i] = { x, y, r: s.r, g: s.g, b: s.b, lum: s.lum, sat: s.sat, value: EMPTY, margin: 0, pale: 0 };
     }
   }
 
@@ -557,10 +607,40 @@ export function recognizeBoard(img: ImageData, opts: RecognizeOptions = {}): Rec
   const whiteCut = bg.lum + Math.max(16, bg.lum * 0.09);
   const whiteSatCut = Math.max(18, bg.sat * 0.65);
 
+  // 白子的第二条判法：底色有色、白子无色，就靠“掉了色”认。
+  // 有的客户端把白子画成一颗带明暗的球，背光半边能暗到跟木色一样，整圈取样的中位亮度
+  // 甚至比底色还低一点（实测木色亮度 200、彩度 139，白子整圈中位亮度 190、彩度 10 上下）。
+  // 这种盘上按亮度求阈值永远是“怎么调都差一点”：调低了把木色算成白子，调高了白子全丢，
+  // 因为两者亮度本来就不是一个方向的东西。彩色对无色的差别才是稳定的那条线。
+  // 底色本身没什么彩色时（浅底棋盘、打印图）这条路自动关掉，还是老办法。
+  const paleRule = bg.sat >= 45;
+  const paleSatCut = Math.max(26, bg.sat * 0.4);
+  const paleLumCut = bg.lum - Math.max(14, bg.lum * 0.1);
+  // 取样圈整好会跟交叉点的两条格线相交，格线画在棋子上层的客户端会把这四个方向染成线色。
+  // 划掉贴着格线的取样（离格线一个线宽以内），留下的斜向几段看的是棋子本色。
+  // 这个线宽按截图上格线的实际粗细取，不跟着步长放大，否则大图上会把整圈都划掉。
+  const lineGuard = Math.min(Math.max(1.2, grid.step * 0.08), 2.5);
+  const boardX1 = grid.originX + (grid.size - 1) * grid.step;
+  const boardY1 = grid.originY + (grid.size - 1) * grid.step;
+  const ignoreSample = (x: number, y: number): boolean => {
+    // 棋盘外面的那圈（边距）跟棋盘内的木色未必一样，边线上的棋子有一角取样落在那里，
+    // 那部分判断不了棋子本色，按不算处理
+    if (x < grid.originX - grid.step * 0.5 || x > boardX1 + grid.step * 0.5) return true;
+    if (y < grid.originY - grid.step * 0.5 || y > boardY1 + grid.step * 0.5) return true;
+    const kx = Math.round((x - grid.originX) / grid.step);
+    const ky = Math.round((y - grid.originY) / grid.step);
+    return (
+      Math.abs(x - (grid.originX + kx * grid.step)) <= lineGuard ||
+      Math.abs(y - (grid.originY + ky * grid.step)) <= lineGuard
+    );
+  };
+
   const stones: number[] = new Array(total).fill(EMPTY);
   for (let i = 0; i < total; i++) {
     const l = lums[i];
     const s = sats[i];
+    const pale = paleRule ? paleFraction(samples[i], paleSatCut, paleLumCut, ignoreSample) : 0;
+    pointStats[i].pale = pale;
     let v = EMPTY;
     let margin = Math.min(Math.abs(l - bg.lum), Math.max(Math.abs(l - blackCut), Math.abs(l - whiteCut)));
     if (l < blackCut) {
@@ -569,6 +649,9 @@ export function recognizeBoard(img: ImageData, opts: RecognizeOptions = {}): Rec
     } else if (l > whiteCut && s < whiteSatCut) {
       v = WHITE;
       margin = Math.min(l - whiteCut, whiteSatCut - s);
+    } else if (paleRule && pale >= 0.5) {
+      v = WHITE;
+      margin = (pale - 0.5) * 40;
     } else {
       margin = Math.min(Math.abs(l - blackCut), Math.abs(l - whiteCut) + (s < whiteSatCut ? 0 : 12));
     }
@@ -601,6 +684,7 @@ export function recognizeBoard(img: ImageData, opts: RecognizeOptions = {}): Rec
       backgroundLum: bg.lum,
       backgroundSat: bg.sat,
       backgroundSource: bg.source,
+      paleRule,
       usedCrop,
       pointStats
     },

@@ -381,7 +381,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }): React.ReactElement
   return (
     <Shell title="棋谱库" wide onClose={onClose}>
       {items.length === 0 ? (
-        <div className="empty">棋谱库还是空的。对局结束后点「存入棋谱库」，就会存到这里。</div>
+        <div className="empty">棋谱库还是空的。对局结束后点“存入棋谱库”，就会存到这里。</div>
       ) : (
         <div className="lib-list">
           {items.map((it) => (
@@ -702,7 +702,7 @@ function SettingsDialog({ onClose }: { onClose: () => void }): React.ReactElemen
       <h4 style={{ margin: '18px 0 8px' }}>图片识别</h4>
       <div className="small faint" style={{ marginBottom: 10, lineHeight: 1.7 }}>
         默认用本机算法识别，离线、免费、不传图。下面的接口是可选的备用方案：留空就一直用本地识别；
-        填好之后，「从图片识别棋谱」里会多一个用大模型识别的按钮，适合拍照变形比较厉害的图。
+        填好之后，“从图片识别棋谱”里会多一个用大模型识别的按钮，适合拍照变形比较厉害的图。
       </div>
       <div className="grid-2">
         <div className="field">

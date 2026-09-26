@@ -26,16 +26,17 @@ npm run dist         # 出安装包和便携版，产物在 release/
 自测脚本，改完规则、识别算法或窗口逻辑先跑一遍：
 
 ```
-npm test                      # 下面三份纯逻辑自测一起跑
+npm test                      # 下面四份纯逻辑自测一起跑
 npm run test:rules            # 规则引擎：落子、提子、自杀、劫、超级劫、数子、坐标
 npm run test:window           # 窗口尺寸与位置：居中、越界拉回、换屏幕、副屏更小
 npm run test:ui               # 标签页规则、地址栏输入、分栏夹取、送去引擎的局面
+npm run test:cv               # 棋盘识别：自己画几种风格的棋盘，看黑白子认不认得对
 npm run test:engine           # 真引擎复验：每一份局面 loadsgf 后盘面与行棋方都对得上
 node tools/gtp-selftest.mjs   # 真引擎链路：启动、loadsgf、落子、分析
 node tools/cv-check.mjs 图片 --answer 答案.sgf   # 图片识别的准确率回归
 ```
 
-规则引擎那份自测有 70 项断言，窗口 37 项，界面逻辑 134 项，都能直接 `node tools/rules-selftest.mjs`、`node tools/window-state-selftest.mjs`、`node tools/ui-logic-selftest.mjs` 跑。它们存在的理由很实在：这类错不会让类型检查报错，只会让程序悄悄下错棋、开出一个拖不动的窗口，或者关掉标签跳到别的页面上。`test:engine` 要开真引擎，二十多秒，所以不在 `npm test` 里。
+规则引擎那份自测有 70 项断言，窗口 37 项，界面逻辑 134 项，棋盘识别 34 项，都能直接 `node tools/rules-selftest.mjs`、`node tools/window-state-selftest.mjs`、`node tools/ui-logic-selftest.mjs`、`node tools/cv-selftest.mjs` 跑。它们存在的理由很实在：这类错不会让类型检查报错，只会让程序悄悄下错棋、开出一个拖不动的窗口、关掉标签跳到别的页面上，或者悄悄少认一半白子。`test:engine` 要开真引擎，二十多秒，所以不在 `npm test` 里。
 
 跑起来的实例也能从外面看：`node tools/devtest.mjs --remote-debugging-port=9223` 起一个独立配置的验收实例，再用 `node tools/live-probe.mjs "<表达式>"` 在它的界面里求值，截图和点击见 `tools/cdp.mjs`。
 
@@ -49,7 +50,7 @@ node tools/devtest.mjs --remote-debugging-port=9223
 
 它把编译产物复制一份，只改用户目录名，其余代码一字不差，于是两个实例互不干扰。`tools/probe-window.ps1` 是配套的窗口探针，可以打印窗口样式位、位置、DPI，也能模拟拖动、最大化，还能用 WM_NCHITTEST 问系统"这条边上按下去算不算缩放边框"。
 
-`tools/browser-board-test.html` 是给"内置浏览器截取棋谱"用的固定测试页：一页 19 路棋盘，摆着一组写死的黑白子。在程序里用它打开这个页面、按"截取棋谱"，识别结果应当正好是 19 路、黑 12 白 12。想离线核对，就把这页的截图配 `tools/browser-board-answer.sgf` 喂给 `cv-check.mjs`：
+`tools/browser-board-test.html` 是给"内置浏览器截取棋谱"用的固定测试页：一页 19 路棋盘，摆着一组写死的黑白子。在程序里用它打开这个页面、按"截取棋谱"，识别结果应当正好是 19 路、黑 12 白 12。两个查询参数：`?style=yike` 换成另一种客户端的样子（亮橙木色、蓝格线、白子是灰球面，格线还压在棋子上层，白子最难认的就是这一种），`?px=320` 把棋盘钉小，分屏矮的时候靠它把整块棋盘塞进画面。想离线核对，就把这页的截图配 `tools/browser-board-answer.sgf` 喂给 `cv-check.mjs`：
 
 ```
 node tools/cv-check.mjs 截图.png --answer tools/browser-board-answer.sgf
@@ -137,6 +138,10 @@ KataGo 的 `loadsgf` 只认根节点上的摆子：第二个节点往后只要�
 网页里点 target=_blank 的链接、或者网页自己 window.open 的时候，会在同一个分屏里开成一个新标签，不再弹出独立窗口，所以开着几个页面都能截取。截取棋谱认的是当前标签，不是第一个打开的页面。
 
 标签快捷键：Ctrl+T 新建，Ctrl+Shift+W 关闭，Ctrl+Tab / Ctrl+Shift+Tab 切换。这几条在网页有焦点时也有效，走的是菜单加速键；Ctrl+W 会被 Chromium 自己吃掉，所以关闭标签用 Ctrl+Shift+W。
+
+“截取棋谱”认的是可见画面，棋盘得整块进画面：分屏太矮或网页棋盘太大时，先拉宽分屏、切成上下分栏，或者把网页缩小（Ctrl 加减号）再截。
+
+识别黑白子看的不只是亮度。有的客户端把木色画得很亮、白子画成带明暗的灰球面，白子整圈取样的亮度跟木色差不多甚至更低，只按“比底色亮”找白子会一颗都找不到（实测过：木色亮度 200、白子 190）。所以底色本身有色（彩度够高）时，还认一条“掉了色”：整圈取样过半是没有颜色又不暗的像素，就是白子；底色没什么彩色时（打印图、浅底棋盘）这条路自动关掉，还是按亮度认。取样圈会跟格线相交、边线上的子还有一角落在盘外，这两类像素先划掉再算，免得被线色和边距带偏。
 
 ## 操作
 

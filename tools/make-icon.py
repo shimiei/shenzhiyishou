@@ -1,4 +1,4 @@
-"""生成应用图标：深底 + 金色「一圈」笔意（enso），并输出多尺寸 .ico。"""
+"""生成应用图标：深底 + 金色“一圈”笔意（enso），并输出多尺寸 .ico。"""
 
 from PIL import Image, ImageDraw
 import math

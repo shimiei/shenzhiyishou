@@ -20,7 +20,8 @@
     "test:window": "node tools/window-state-selftest.mjs",
     "test:ui": "node tools/ui-logic-selftest.mjs",
     "test:engine": "node tools/engine-sgf-check.mjs",
-    "test": "npm run test:rules && npm run test:window && npm run test:ui"
+    "test:cv": "node tools/cv-selftest.mjs",
+    "test": "npm run test:rules && npm run test:window && npm run test:ui && npm run test:cv"
   },
   "dependencies": {},
   "devDependencies": {

@@ -17,7 +17,7 @@
 <div class="wrap">
   <h1>对局室 · 第 3 局</h1>
   <div class="meta">黑：测试棋手（9d）　白：对手（9d）　时限：各 30 分钟　贴目 7.5</div>
-  <div class="board"><canvas id="board" width="640" height="640"></canvas></div>
+  <div class="board" id="boardBox"><canvas id="board" width="640" height="640"></canvas></div>
   <div class="side">
     <span class="pill">手数 24</span><span class="pill">黑 12 子</span><span class="pill">白 12 子</span>
   </div>
@@ -29,7 +29,10 @@
   const LETTERS = 'ABCDEFGHJKLMNOPQRSTUVWXYZ';
   const SIZE = 19;
   // 棋盘跟着窗口宽度走：真实的对局站也是这样，分屏窄的时候会自动缩小。
-  const measure = () => Math.max(260, Math.min(640, window.innerWidth - 26));
+  // ?px= 可以钉死尺寸：分屏矮的时候要靠它把整块棋盘塞进截图里，识别只认整块的棋盘。
+  const FIXED_PX = Number(new URLSearchParams(location.search).get('px')) || 0;
+  const measure = () =>
+    FIXED_PX ? Math.max(140, Math.min(640, FIXED_PX)) : Math.max(260, Math.min(640, window.innerWidth - 26));
   let PX = measure();
   const MARGIN = () => PX * 0.072;
   const step = () => (PX - MARGIN() * 2) / (SIZE - 1);
@@ -41,6 +44,47 @@
   const gi = (v) => (SIZE - parseInt(v.slice(1), 10)) * SIZE + LETTERS.indexOf(v[0].toUpperCase());
   const cv = document.getElementById('board');
   const ctx = cv.getContext('2d');
+  // 两套画法：
+  // 默认是本机页面那种深色格线、白子最亮处接近纯白的画法；
+  // ?style=yike 是另一种客户端的样子：亮橙木色配蓝格线，白子是带明暗的灰球面，
+  // 整圈取样的亮度跟木色差不多甚至更低，格线还画在棋子上层。识别就是在这一种上翻过车。
+  const STYLE = new URLSearchParams(location.search).get('style') === 'yike' ? 'yike' : 'default';
+  const PAL = STYLE === 'yike'
+    ? {
+        wood: ['#fed57b', '#febd73', '#f2ab63'],
+        line: 'rgba(104,151,198,1)',
+        star: 'rgba(150,170,200,0.9)',
+        black: [0, '#6a6a72', 0.35, '#2a2c30', 1, '#0c0e12'],
+        white: [0, '#fafafa', 0.25, '#e1e1e1', 0.6, '#bebebe', 1, '#acacac'],
+        outline: { b: 'rgba(0,0,0,0.45)', w: 'rgba(120,120,112,0.45)' },
+        linesOver: true
+      }
+    : {
+        wood: ['#e3bd6c', '#dcb35c', '#d3a94f'],
+        line: 'rgba(78,50,14,0.75)',
+        star: 'rgba(60,38,10,0.85)',
+        black: [0, '#6a6a72', 0.45, '#242429', 1, '#0a0a0d'],
+        white: [0, '#ffffff', 0.6, '#f2f2f0', 1, '#cfcfc8'],
+        outline: { b: 'rgba(0,0,0,0.5)', w: 'rgba(120,120,110,0.55)' },
+        linesOver: false
+      };
+  function drawLines(M, sp) {
+    ctx.strokeStyle = PAL.line;
+    ctx.lineWidth = Math.max(0.8, PX / 560) * (STYLE === 'yike' ? 1.6 : 1);
+    for (let i = 0; i < SIZE; i++) {
+      const p = M + i * sp;
+      ctx.beginPath();
+      ctx.moveTo(M, p); ctx.lineTo(PX - M, p);
+      ctx.moveTo(p, M); ctx.lineTo(p, PX - M);
+      ctx.stroke();
+    }
+    ctx.fillStyle = PAL.star;
+    for (const [sx, sy] of [[3, 3], [3, 9], [3, 15], [9, 3], [9, 9], [9, 15], [15, 3], [15, 9], [15, 15]]) {
+      ctx.beginPath();
+      ctx.arc(M + sx * sp, M + sy * sp, Math.max(1.8, sp * 0.1), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
   function draw() {
     PX = measure();
     cv.width = PX;
@@ -50,27 +94,13 @@
     ctx.clearRect(0, 0, PX, PX);
     // 木纹底
     const grad = ctx.createLinearGradient(0, 0, PX, PX);
-    grad.addColorStop(0, '#e3bd6c');
-    grad.addColorStop(0.5, '#dcb35c');
-    grad.addColorStop(1, '#d3a94f');
+    grad.addColorStop(0, PAL.wood[0]);
+    grad.addColorStop(0.5, PAL.wood[1]);
+    grad.addColorStop(1, PAL.wood[2]);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, PX, PX);
-    ctx.strokeStyle = 'rgba(78,50,14,0.75)';
-    ctx.lineWidth = Math.max(0.8, PX / 560);
-    for (let i = 0; i < SIZE; i++) {
-      const p = M + i * sp;
-      ctx.beginPath();
-      ctx.moveTo(M, p); ctx.lineTo(PX - M, p);
-      ctx.moveTo(p, M); ctx.lineTo(p, PX - M);
-      ctx.stroke();
-    }
-    ctx.fillStyle = 'rgba(60,38,10,0.85)';
-    for (const [sx, sy] of [[3, 3], [3, 9], [3, 15], [9, 3], [9, 9], [9, 15], [15, 3], [15, 9], [15, 15]]) {
-      ctx.beginPath();
-      ctx.arc(M + sx * sp, M + sy * sp, Math.max(1.8, sp * 0.1), 0, Math.PI * 2);
-      ctx.fill();
-    }
-    const R = sp * 0.47;
+    if (!PAL.linesOver) drawLines(M, sp);
+    const R = sp * (STYLE === 'yike' ? 0.46 : 0.47);
     function stone(v, color) {
       const [x, y] = at(v);
       ctx.beginPath();
@@ -78,24 +108,31 @@
       ctx.fillStyle = 'rgba(0,0,0,0.22)';
       ctx.fill();
       const g = ctx.createRadialGradient(x - R * 0.35, y - R * 0.4, R * 0.15, x, y, R);
-      if (color === 'b') { g.addColorStop(0, '#6a6a72'); g.addColorStop(0.45, '#242429'); g.addColorStop(1, '#0a0a0d'); }
-      else { g.addColorStop(0, '#ffffff'); g.addColorStop(0.6, '#f2f2f0'); g.addColorStop(1, '#cfcfc8'); }
+      const stops = color === 'b' ? PAL.black : PAL.white;
+      for (let i = 0; i < stops.length; i += 2) g.addColorStop(stops[i], stops[i + 1]);
       ctx.beginPath();
       ctx.arc(x, y, R, 0, Math.PI * 2);
       ctx.fillStyle = g;
       ctx.fill();
-      ctx.strokeStyle = color === 'b' ? 'rgba(0,0,0,0.5)' : 'rgba(120,120,110,0.55)';
+      ctx.strokeStyle = color === 'b' ? PAL.outline.b : PAL.outline.w;
       ctx.lineWidth = 1;
       ctx.stroke();
     }
     WHITE.forEach((v) => stone(v, 'w'));
     BLACK.forEach((v) => stone(v, 'b'));
+    if (PAL.linesOver) drawLines(M, sp);
+  }
+  if (STYLE === 'yike') {
+    const box = document.getElementById('boardBox');
+    box.style.background = '#febd73';
+    box.style.borderColor = '#e0a253';
   }
   draw();
   window.addEventListener('resize', draw);
 
   // 供比对用：坐标与索引
   window.__expected = {
+    style: STYLE,
     size: SIZE,
     black: BLACK, white: WHITE,
     blackIdx: BLACK.map(gi), whiteIdx: WHITE.map(gi)

@@ -199,7 +199,7 @@ export function ImageImportDialog(): React.ReactElement | null {
   const visionRecognize = async (): Promise<void> => {
     const v = settings.vision;
     if (!v.enabled || !v.endpoint || !v.apiKey) {
-      setVisionMsg('还没有配置视觉大模型接口。到「设置 → 图片识别」里填好接口地址、模型名和密钥之后就能用。');
+      setVisionMsg('还没有配置视觉大模型接口。到“设置 → 图片识别”里填好接口地址、模型名和密钥之后就能用。');
       return;
     }
     setVisionMsg('正在请求视觉大模型…');
