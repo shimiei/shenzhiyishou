@@ -43,12 +43,19 @@ import {
   DEFAULT_LEFT,
   DEFAULT_RIGHT,
   DEFAULT_SPLIT,
+  DEFAULT_SPLIT_Y,
   LEFT_MAX,
   LEFT_MIN,
   RIGHT_MAX,
   RIGHT_MIN,
   SPLIT_MAX,
-  SPLIT_MIN
+  SPLIT_MIN,
+  SPLIT_MAX_Y,
+  SPLIT_MIN_Y,
+  axisSpec,
+  toAxisChoice,
+  type AxisChoice,
+  type SplitAxis
 } from '../core/layout/panes';
 
 export type Tool = 'play' | 'black' | 'white' | 'erase' | 'triangle' | 'square' | 'circle' | 'cross' | 'label';
@@ -113,7 +120,11 @@ interface AppStore {
   dialog: DialogName;
   image: { dataUrl: string; name: string } | null;
   browserOpen: boolean;
+  /** 棋盘占中间那块的比例，分两个方向各记一份：左右分栏那份是宽度比例，上下分栏是高度比例。 */
   splitRatio: number;
+  splitRatioY: number;
+  /** 用户选的分栏方向，auto 是还没选过（这时界面按窗口自己挑，见 App 里的 layoutAxis）。 */
+  splitAxis: AxisChoice;
   /** 左右两栏的像素宽度，拖动分隔条时改。 */
   leftWidth: number;
   rightWidth: number;
@@ -177,7 +188,10 @@ interface AppStore {
   setDialog: (d: DialogName) => void;
   openImage: (img: { dataUrl: string; name: string } | null) => void;
   setBrowserOpen: (v: boolean) => void;
-  setSplit: (v: number) => void;
+  /** 拖分隔条：按这次生效的方向写对应的那份比例。 */
+  setSplit: (v: number, axis: SplitAxis) => void;
+  /** 切换中间那块的排布方向，传的就是要切到的方向；切过一次就不再算"没选过"了。 */
+  setSplitAxis: (v: SplitAxis) => void;
   setLeftWidth: (v: number) => void;
   setRightWidth: (v: number) => void;
   openBrowserTab: (url: string, activate?: boolean) => string;
@@ -222,12 +236,16 @@ function persistLayout(s: {
   leftWidth: number;
   rightWidth: number;
   splitRatio: number;
+  splitRatioY: number;
+  splitAxis: AxisChoice;
   browserOpen: boolean;
 }): void {
   const layout: AppSettings['layout'] = {
     leftWidth: Math.round(s.leftWidth),
     rightWidth: Math.round(s.rightWidth),
     splitRatio: s.splitRatio,
+    splitRatioY: s.splitRatioY,
+    splitAxis: s.splitAxis,
     browserOpen: s.browserOpen
   };
   if (layoutTimer) clearTimeout(layoutTimer);
@@ -269,6 +287,8 @@ export const useStore = create<AppStore>((set, get) => ({
   image: null,
   browserOpen: false,
   splitRatio: DEFAULT_SPLIT,
+  splitRatioY: DEFAULT_SPLIT_Y,
+  splitAxis: 'auto',
   leftWidth: DEFAULT_LEFT,
   rightWidth: DEFAULT_RIGHT,
   tabs: [],
@@ -296,6 +316,9 @@ export const useStore = create<AppStore>((set, get) => ({
       leftWidth: clampRange(layout.leftWidth, LEFT_MIN, LEFT_MAX),
       rightWidth: clampRange(layout.rightWidth, RIGHT_MIN, RIGHT_MAX),
       splitRatio: clampRange(layout.splitRatio, SPLIT_MIN, SPLIT_MAX),
+      // 老配置里没有这两项，也可能存的是别方向的值，各按各的范围收一遍
+      splitRatioY: clampRange(layout.splitRatioY ?? DEFAULT_SPLIT_Y, SPLIT_MIN_Y, SPLIT_MAX_Y),
+      splitAxis: toAxisChoice(layout.splitAxis),
       browserOpen: layout.browserOpen,
       // 重启后浏览器留一个空白标签，用户直接就能输地址，不用先点新建
       tabs: layout.browserOpen ? [makeTab('about:blank')] : [],
@@ -977,8 +1000,17 @@ export const useStore = create<AppStore>((set, get) => ({
     persistLayout(get());
   },
 
-  setSplit(v) {
-    set({ splitRatio: clampRange(v, SPLIT_MIN, SPLIT_MAX) });
+  setSplit(v, axis) {
+    // 两个方向的范围不一样，写的是哪个方向的数就按哪个方向收
+    const spec = axisSpec(axis);
+    if (axis === 'y') set({ splitRatioY: clampRange(v, spec.min, spec.max) });
+    else set({ splitRatio: clampRange(v, spec.min, spec.max) });
+    persistLayout(get());
+  },
+
+  setSplitAxis(v) {
+    if (v === get().splitAxis) return;
+    set({ splitAxis: v });
     persistLayout(get());
   },
 

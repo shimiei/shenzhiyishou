@@ -138,8 +138,15 @@ export interface AppSettings {
   layout: {
     leftWidth: number;
     rightWidth: number;
-    /** 棋盘占中间那块的宽度比例，0.25 到 0.75。 */
+    /** 棋盘占中间那块的宽度比例，左右分栏时用，0.25 到 0.75。 */
     splitRatio: number;
+    /** 棋盘占中间那块的高度比例，上下分栏时用。 */
+    splitRatioY: number;
+    /**
+     * 中间那块怎么排：x 棋盘在左浏览器在右，y 棋盘在上浏览器在下。
+     * auto 表示用户还没自己选过，这时按窗口自己挑一个（见 core/layout/panes.ts 的 pickAxis）。
+     */
+    splitAxis: 'x' | 'y' | 'auto';
     browserOpen: boolean;
   };
   vision: {
@@ -174,6 +181,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     leftWidth: 248,
     rightWidth: 316,
     splitRatio: 0.5,
+    splitRatioY: 0.55,
+    splitAxis: 'auto',
     browserOpen: false
   },
   vision: {

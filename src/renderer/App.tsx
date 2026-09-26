@@ -17,6 +17,7 @@ import {
   DEFAULT_LEFT,
   DEFAULT_RIGHT,
   DEFAULT_SPLIT,
+  DEFAULT_SPLIT_Y,
   LEFT_MAX,
   LEFT_MIN,
   MIN_BOARD_PX,
@@ -26,8 +27,10 @@ import {
   SPLITTER_PX,
   fitPanelWidth,
   fitSplit,
-  percentHint,
-  pxHint
+  pickAxis,
+  pxHint,
+  splitSidesHint,
+  type SplitAxis
 } from './core/layout/panes';
 import { BLACK } from '../shared/types';
 
@@ -40,12 +43,16 @@ export function App(): React.ReactElement {
   const snapshot = useStore((s) => s.analysis);
   const browserOpen = useStore((s) => s.browserOpen);
   const splitRatio = useStore((s) => s.splitRatio);
+  const splitRatioY = useStore((s) => s.splitRatioY);
+  const splitAxisPref = useStore((s) => s.splitAxis);
+  const setSplitAxis = useStore((s) => s.setSplitAxis);
   const leftWidth = useStore((s) => s.leftWidth);
   const rightWidth = useStore((s) => s.rightWidth);
   const setSplit = useStore((s) => s.setSplit);
   const setLeftWidth = useStore((s) => s.setLeftWidth);
   const setRightWidth = useStore((s) => s.setRightWidth);
   const [wsWidth, setWsWidth] = useState(0);
+  const [wsHeight, setWsHeight] = useState(0);
   const dragStart = useRef({ left: DEFAULT_LEFT, right: DEFAULT_RIGHT, split: DEFAULT_SPLIT });
   const settings = useStore((s) => s.settings);
   const zoom = useStore((s) => s.zoom);
@@ -67,13 +74,18 @@ export function App(): React.ReactElement {
     void boot();
   }, [boot]);
 
-  // 侧栏能占多宽要看工作区现在多宽，窗口一改就得重新算，所以量着走
+  // 侧栏能占多宽要看工作区现在多宽，窗口一改就得重新算，所以量着走。
+  // 高度也要量：上下分栏时棋盘与浏览器分的是高度。
   useEffect(() => {
     const el = wsRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setWsWidth(el.clientWidth));
+    const measure = (): void => {
+      setWsWidth(el.clientWidth);
+      setWsHeight(el.clientHeight);
+    };
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    setWsWidth(el.clientWidth);
+    measure();
     return () => ro.disconnect();
   }, [ready]);
 
@@ -290,7 +302,19 @@ export function App(): React.ReactElement {
     return { left, right, mainWidth, mid };
   }, [leftWidth, rightWidth, wsWidth, browserOpen]);
 
-  const split = browserOpen ? fitSplit(splitRatio, panes.mainWidth) : DEFAULT_SPLIT;
+  /**
+   * 中间那块怎么排。用户自己选过就听用户的；没选过时按窗口挑一个：
+   * 左右分栏摆出来浏览器比它自己还高（竖着的一条窄缝）就用上下分栏，
+   * 免得一打开浏览器就是手机版的网页。
+   */
+  const layoutAxis: SplitAxis =
+    splitAxisPref === 'auto' ? pickAxis(splitRatio, panes.mainWidth, wsHeight || 900) : splitAxisPref;
+  /** 当前方向下棋盘占的比例。两个方向各记一份，切来切去不用重新拖一遍。 */
+  const axisRatio = layoutAxis === 'y' ? splitRatioY : splitRatio;
+  /** 当前方向下中间那块的可用边长：左右分栏看宽度，上下分栏看高度。 */
+  const mainSize = (): number => (layoutAxis === 'y' ? wsHeight || 900 : panes.mainWidth);
+
+  const split = browserOpen ? fitSplit(axisRatio, mainSize(), layoutAxis) : DEFAULT_SPLIT;
 
   /** 拖动时只改"用户意图值"：按当前窗口夹一遍再存，免得存进去一个非法的宽度。 */
   const dragLeft = (dx: number): void => {
@@ -306,9 +330,14 @@ export function App(): React.ReactElement {
       fitPanelWidth(dragStart.current.right - dx, RIGHT_MIN, RIGHT_MAX, total, panes.left + SPLITTER_PX + panes.mid)
     );
   };
-  const dragSplit = (dx: number): void => {
-    const usable = Math.max(panes.mainWidth - SPLITTER_PX, 1);
-    setSplit(fitSplit(dragStart.current.split + dx / usable, panes.mainWidth));
+  /**
+   * 上下分栏时把这条横的分隔条往下拖，上面那块（棋盘）变大；左右分栏时
+   * 把竖的分隔条往右拖，左边那块（棋盘）变大。两个方向都是"往棋盘那边拖棋盘就变大"，
+   * 所以位移的正负号是同一套算法。
+   */
+  const dragSplit = (delta: number): void => {
+    const usable = Math.max(mainSize() - SPLITTER_PX, 1);
+    setSplit(fitSplit(dragStart.current.split + delta / usable, mainSize(), layoutAxis), layoutAxis);
   };
 
   // 提示显示的是"实际会显示成多宽"，跟渲染用的是同一套夹取，
@@ -318,7 +347,13 @@ export function App(): React.ReactElement {
     pxHint(fitPanelWidth(useStore.getState().leftWidth, LEFT_MIN, LEFT_MAX, liveWidth(), RIGHT_MIN + SPLITTER_PX + panes.mid));
   const rightHint = (): string =>
     pxHint(fitPanelWidth(useStore.getState().rightWidth, RIGHT_MIN, RIGHT_MAX, liveWidth(), panes.left + SPLITTER_PX + panes.mid));
-  const splitHint = (): string => percentHint(fitSplit(useStore.getState().splitRatio, panes.mainWidth));
+  const splitHint = (): string => {
+    const s = useStore.getState();
+    const axis = layoutAxis;
+    const size = axis === 'y' ? (wsRef.current?.clientHeight ?? 900) : panes.mainWidth;
+    const ratio = axis === 'y' ? s.splitRatioY : s.splitRatio;
+    return splitSidesHint(fitSplit(ratio, size, axis), size, axis);
+  };
 
   if (!ready) {
     return (
@@ -355,13 +390,23 @@ export function App(): React.ReactElement {
           onReset={() => setLeftWidth(DEFAULT_LEFT)}
         />
         <div className="main-col">
-          <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0 }}>
+          <div
+            className={'main-split' + (layoutAxis === 'y' ? ' stacked' : '')}
+            style={{
+              display: 'flex',
+              flexDirection: layoutAxis === 'y' ? 'column' : 'row',
+              flex: 1,
+              minHeight: 0,
+              minWidth: 0
+            }}
+          >
             <div
               style={{
                 flex: browserOpen ? `${split} 1 0%` : '1 1 auto',
                 display: 'flex',
                 flexDirection: 'column',
                 minWidth: 0,
+                minHeight: 0,
                 position: 'relative'
               }}
             >
@@ -410,18 +455,23 @@ export function App(): React.ReactElement {
             {browserOpen ? (
               <>
                 <DragHandle
-                  title="拖动调整棋盘与浏览器的比例，双击复位"
+                  dir={layoutAxis}
+                  title={
+                    layoutAxis === 'y'
+                      ? '拖动调整棋盘与浏览器的高度，双击复位'
+                      : '拖动调整棋盘与浏览器的宽度，双击复位'
+                  }
                   onStart={() => {
-                    // 从"看得见的宽度"起步，不是从存盘的那个数：窗口窄的时候两者不一样，
+                    // 从"看得见的尺寸"起步，不是从存盘的那个数：窗口小的时候两者不一样，
                     // 否则会先拖过一段什么都不动的距离，手感发黏
                     dragStart.current.split = split;
                   }}
-                  onMove={(dx) => dragSplit(dx)}
+                  onMove={(delta) => dragSplit(delta)}
                   hint={splitHint}
-                  onReset={() => setSplit(DEFAULT_SPLIT)}
+                  onReset={() => setSplit(layoutAxis === 'y' ? DEFAULT_SPLIT_Y : DEFAULT_SPLIT, layoutAxis)}
                 />
-                <div style={{ flex: `${1 - split} 1 0%`, display: 'flex', minWidth: 0 }}>
-                  <BrowserPanel />
+                <div style={{ flex: `${1 - split} 1 0%`, display: 'flex', minWidth: 0, minHeight: 0 }}>
+                  <BrowserPanel axis={layoutAxis} onAxis={setSplitAxis} />
                 </div>
               </>
             ) : null}

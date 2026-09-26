@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useStore, registerWebview, webContentsIdOf } from '../state/store';
 import { tabTitle, type BrowserTab } from '../core/browser/tabs';
 import { normalizeUrl } from '../core/browser/url';
+import type { SplitAxis } from '../core/layout/panes';
 
 interface WebviewElement extends HTMLElement {
   src: string;
@@ -101,7 +102,14 @@ function TabView({
   return <div className="browser-view" ref={hostRef} style={{ display: active ? 'block' : 'none' }} />;
 }
 
-export function BrowserPanel(): React.ReactElement {
+export function BrowserPanel({
+  axis,
+  onAxis
+}: {
+  /** 现在实际用的排布方向，由 App 算好传进来（用户没选过时是自动挑的那个）。 */
+  axis: SplitAxis;
+  onAxis: (v: SplitAxis) => void;
+}): React.ReactElement {
   const viewsRef = useRef(new Map<string, WebviewElement>());
   const [input, setInput] = useState('');
   const [state, setState] = useState<Record<string, TabState>>({});
@@ -261,11 +269,19 @@ export function BrowserPanel(): React.ReactElement {
         <button className="btn sm primary" onClick={() => void capture()} title="把当前网页画面里的棋盘识别成棋谱">
           截取棋谱
         </button>
+        <div className="seg" title="棋盘和浏览器怎么排：左右分栏是竖着切开，上下分栏是横着切开（网页能占满整条宽度，不再是竖着的一条窄缝）">
+          <button className={'seg-item' + (axis === 'x' ? ' active' : '')} onClick={() => onAxis('x')}>
+            左右
+          </button>
+          <button className={'seg-item' + (axis === 'y' ? ' active' : '')} onClick={() => onAxis('y')}>
+            上下
+          </button>
+        </div>
         <button className="btn icon" onClick={() => setBrowserOpen(false)} title="关闭分屏">
           ✕
         </button>
       </div>
-      <div className="row wrap" style={{ padding: '6px 8px 0', gap: 6 }}>
+      <div className="row wrap browser-presets" style={{ padding: '6px 8px 0', gap: 6 }}>
         {PRESETS.map((p) => (
           <button key={p.label} className="chip" onClick={() => go(p.url)}>
             {p.label}

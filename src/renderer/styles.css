@@ -450,6 +450,14 @@ textarea {
   z-index: 6;
 }
 
+/* 上下分栏时这条分隔条是横着的，拖动改的是高度 */
+.splitter.across {
+  width: auto;
+  height: 5px;
+  flex: 0 0 5px;
+  cursor: row-resize;
+}
+
 /*
  * 5 像素的线太细，鼠标很难正好落在上面，一偏就落进旁边的 webview 里，
  * 那边指针事件是访客页面的，于是拖动没反应。往两边各借 4 像素当热区，
@@ -464,21 +472,49 @@ textarea {
   right: -4px;
 }
 
+.splitter.across::before {
+  top: -4px;
+  bottom: -4px;
+  left: 0;
+  right: 0;
+}
+
 .splitter:hover,
 .splitter.active {
   background: var(--accent-soft);
 }
 
+/*
+ * 分隔条中间那根短把手。太细太淡用户根本不知道这里能拖，
+ * 于是拖不动就说"调不了大小"；做成一截看得见的小横条（或者小竖条），
+ * 鼠标移上去整条亮起来，才像是能抓的东西。
+ */
 .splitter::after {
   content: '';
   position: absolute;
-  left: 2px;
+  left: 1px;
   top: 50%;
   transform: translateY(-50%);
-  width: 1px;
-  height: 26px;
-  background: var(--border);
-  border-radius: 1px;
+  width: 3px;
+  height: 34px;
+  background: var(--text-faint);
+  opacity: 0.55;
+  border-radius: 2px;
+  transition: opacity 0.12s ease;
+}
+
+.splitter.across::after {
+  left: 50%;
+  top: 1px;
+  transform: translateX(-50%);
+  width: 34px;
+  height: 3px;
+}
+
+.splitter:hover::after,
+.splitter.active::after {
+  background: var(--accent);
+  opacity: 1;
 }
 
 /*
@@ -492,6 +528,10 @@ textarea {
   cursor: col-resize;
   touch-action: none;
   user-select: none;
+}
+
+.drag-shield.across {
+  cursor: row-resize;
 }
 
 .drag-hint {
@@ -1145,10 +1185,50 @@ input[type='checkbox'] {
 .browser-pane {
   display: flex;
   flex-direction: column;
+  /* 撑满外面那层：上下分栏时外面是整条中间宽度，不撑开的话只剩内容宽度，
+   * 网页就还是窄窄一条，白折腾 */
+  flex: 1;
   min-width: 0;
   min-height: 0;
   background: var(--panel);
   border-left: 1px solid var(--border-soft);
+  /* 这一栏自己的宽度就是查询条件：窄的时候要按下面的规则给地址栏让地方 */
+  container-type: inline-size;
+  container-name: browserpane;
+}
+
+/*
+ * 浏览器栏窄的时候（比如左右分栏拖到最窄、或者窗口本身不宽），
+ * 一排按钮会把地址栏挤得只剩几个像素宽，连网址都看不全。
+ * 按这一栏自己的宽度收一收：先收掉能靠回车替代的按钮和预设，再收图标间距。
+ */
+@container browserpane (max-width: 560px) {
+  .browser-bar {
+    gap: 4px;
+    padding: 0 6px;
+  }
+  .browser-bar .btn.sm:not(.primary) {
+    display: none;
+  }
+  .browser-bar .seg-item {
+    padding: 0 5px;
+  }
+}
+
+@container browserpane (max-width: 400px) {
+  .browser-presets {
+    display: none;
+  }
+  /* 关分屏的叉也收掉：工具栏上的"分屏"按钮和 Ctrl+B 都能关，地址栏更值钱 */
+  .browser-bar > .btn.icon:last-child {
+    display: none;
+  }
+}
+
+/* 上下分栏时浏览器在棋盘下面，分隔线跟着换到上面那条边 */
+.main-split.stacked .browser-pane {
+  border-left: none;
+  border-top: 1px solid var(--border-soft);
 }
 
 .browser-tabs {

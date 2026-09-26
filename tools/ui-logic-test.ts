@@ -24,11 +24,21 @@ import {
 import {
   DEFAULT_LEFT,
   DEFAULT_RIGHT,
+  MIN_BOARD_H_PX,
+  MIN_BOARD_PX,
+  MIN_BROWSER_H_PX,
+  MIN_BROWSER_PX,
+  SPLIT_MAX,
+  SPLIT_MAX_Y,
+  SPLIT_MIN,
   fitPanelWidth,
   fitSplit,
   LEFT_MIN,
+  pickAxis,
   RIGHT_MIN,
-  SPLITTER_PX
+  SPLITTER_PX,
+  splitSidesHint,
+  toAxisChoice
 } from '../src/renderer/core/layout/panes';
 
 let failed = 0;
@@ -305,25 +315,93 @@ section('分栏：侧栏宽度夹取');
 section('分栏：棋盘与浏览器的比例');
 {
   eq(fitSplit(0.5, 1200), 0.5, '宽窗口下 50% 原样用');
-  eq(fitSplit(0.95, 1200), 0.75, '超过上限压到 75%');
-  eq(fitSplit(0.05, 2000), 0.25, '低于下限抬到 25%（这时像素保底没到 25%）');
 
-  // 可用宽度 1195：棋盘保底 300 → 比例至少 300/1195 ≈ 0.251，比 25% 还高一点
+  // 可用宽度 1195：棋盘保底 300 → 比例至少 300/1195 ≈ 0.251
   const floor = 300 / 1195;
   const nearMin = fitSplit(0.05, 1200);
   ok(Math.abs(nearMin - floor) < 1e-9, '比例被棋盘保底托住，正好是 300 像素', nearMin);
   eq(Math.round(nearMin * 1195), 300, '换回像素就是棋盘保底的 300');
   const nearMax = fitSplit(0.95, 1200);
-  ok(nearMax <= 1 - 260 / 1195 && nearMax <= 0.75, '太靠边的比例被浏览器保底压回来', nearMax);
-  eq(Math.round((1 - nearMax) * 1195) >= 260, true, '浏览器那侧至少留 260 像素');
+  ok(Math.abs(nearMax - (1 - MIN_BROWSER_PX / 1195)) < 1e-9, '太靠边的比例被浏览器保底压回来', nearMax);
+  eq(Math.round((1 - nearMax) * 1195), MIN_BROWSER_PX, '浏览器那侧正好守住它自己的像素保底');
+
+  // 大屏上想给浏览器尽量多的宽度：2560 宽的窗口下范围上限先到场，棋盘还剩 383 像素
+  eq(fitSplit(0.95, 2560), SPLIT_MAX, '2560 宽的窗口下拖到头，比例顶到上限');
+  eq(Math.round((1 - SPLIT_MAX) * (2560 - SPLITTER_PX)), 383, '剩下的 15% 给棋盘，还有 383 像素');
+  eq(fitSplit(0.02, 2560), SPLIT_MIN, '拖到另一头时比例停在下限上');
+  // 窗口没那么宽的时候，先顶到的是棋盘那 300 像素的保底，不是比例下限
+  eq(Math.round(fitSplit(0.02, 1500) * 1495), 300, '1500 宽的窗口下先顶到棋盘的 300 像素保底');
 
   // 中间只剩五百像素，两边保底加起来都放不下，这时不该乱夹，按比例来
   eq(fitSplit(0.5, 500), 0.5, '地方本来就不够时按比例来，不做无意义的夹取');
   eq(fitSplit(0.5, 560), 0.5, '刚好卡在保底之和以下也一样');
 
-  // 保底真的起作用的边界：可用宽度刚好 565
-  const tight = fitSplit(0.9, 570);
-  eq(Math.round((1 - tight) * 565) >= 260, true, '刚好够保底时，浏览器那侧还是留出 260');
+  // 保底真的起作用的边界：可用宽度刚好够两边保底之和（300 + 320 + 分隔条）
+  const tight = fitSplit(0.9, MIN_BOARD_PX + MIN_BROWSER_PX + SPLITTER_PX);
+  eq(
+    Math.round((1 - tight) * (MIN_BOARD_PX + MIN_BROWSER_PX)),
+    MIN_BROWSER_PX,
+    '刚好够保底时，浏览器那侧正好守住自己的保底'
+  );
+  eq(fitSplit(0.95, 1200, 'x'), fitSplit(0.95, 1200), '不写方向时就是左右分栏，原来的调用点不受影响');
+}
+
+/*
+ * 上下分栏是为了让浏览器横过来：中间那块宽度有限而浏览器是满高的，
+ * 只做左右分栏时窗口不宽就永远是一条竖着的窄缝。这里量的是上下分栏时
+ * 两头的高度保底有没有守住。
+ */
+section('分栏：上下分栏（浏览器横过来放）');
+{
+  const h = 838;
+  const usable = h - SPLITTER_PX; // 833
+  eq(fitSplit(0.55, h, 'y'), 0.55, '默认的 55% 在正常窗口高度下原样用');
+  eq(fitSplit(0.05, h, 'y'), MIN_BOARD_H_PX / usable, '比例再小也被棋盘的 320 像素高度保底托住');
+  eq(Math.round(fitSplit(0.05, h, 'y') * usable), MIN_BOARD_H_PX, '换算成像素正好是 320');
+  eq(
+    fitSplit(0.99, h, 'y'),
+    Math.min(SPLIT_MAX_Y, 1 - MIN_BROWSER_H_PX / usable),
+    '比例再大也被浏览器的高度保底压回来'
+  );
+  eq(Math.round((1 - fitSplit(0.99, h, 'y')) * usable), MIN_BROWSER_H_PX, '浏览器那块换算成像素正好是保底值');
+  // 上下分栏的比例上限比左右分栏低：高度上两头都更容易被挤没
+  ok(fitSplit(0.99, h, 'y') < fitSplit(0.99, 1200, 'x'), '上下分栏能到的高度比例确实更小');
+  // 中间那块本来就不够高时，别硬夹，按比例来
+  eq(fitSplit(0.5, 400, 'y'), 0.5, '高度不够放两边保底时按比例来');
+  eq(toAxisChoice('y'), 'y', '认出上下分栏');
+  eq(toAxisChoice('x'), 'x', '认出左右分栏');
+  eq(toAxisChoice(undefined), 'auto', '老配置里没有这一项时算还没选过');
+  eq(toAxisChoice('别的东西'), 'auto', '存了认不出来的值也算还没选过');
+}
+
+/*
+ * 没选过方向时替用户挑一个。挑错的后果就是"一打开浏览器还是竖着的一条"，
+ * 所以这里量的是：窗口不够宽就挑上下分栏，够宽才留在左右分栏。
+ */
+section('分栏：没选过时按窗口挑方向');
+{
+  // 1500 宽的窗口：中间 846，左右分栏 50/50 时浏览器只有 420 宽、却有 838 高
+  eq(pickAxis(0.5, 846, 838), 'y', '窄窗口下浏览器会竖着，挑上下分栏');
+
+  // 2560 的屏幕：中间 1986，50/50 时浏览器 990 宽，还是比 1290 的高矮一头
+  eq(pickAxis(0.5, 1986, 1290), 'y', '2560 屏上 50/50 也还是竖的，照样挑上下分栏');
+  // 但同一块屏，用户把浏览器拖宽到只剩棋盘保底时，左右分栏就够了
+  eq(pickAxis(0.15, 1986, 1290), 'x', '中间够宽时左右分栏更合适，浏览器不会被压成竖条');
+
+  // 超宽屏：50/50 就已经是横的了
+  eq(pickAxis(0.5, 3000, 838), 'x', '超宽屏上左右分栏本来就横着，不用改');
+  eq(pickAxis(0.5, 846, 0), 'x', '还没量出高度时别乱改，先按左右分栏');
+}
+
+section('分栏：拖动时显示的两块尺寸');
+{
+  eq(splitSidesHint(0.5, 1346, 'x'), '棋盘宽 671 px · 浏览器宽 670 px', '左右分栏报的是宽度');
+  eq(splitSidesHint(0.55, 838, 'y'), '棋盘高 458 px · 浏览器高 375 px', '上下分栏报的是高度');
+  // 两块加起来必须正好是可用尺寸，不然拖动时显示的数字会和眼睛看到的不一致
+  const usable = 1346 - SPLITTER_PX;
+  const hint = splitSidesHint(0.37, 1346, 'x');
+  const nums = hint.match(/\d+/g)!.map(Number);
+  eq(nums[0] + nums[1], usable, '提示里两块像素加起来等于可用的那一整块');
 }
 
 section('建议：每一句都要说清是给哪一方的');
