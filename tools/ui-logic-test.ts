@@ -33,7 +33,7 @@ import {
   uniqueFileName
 } from '../src/shared/records';
 import { endpointHint, parseVisionGrid } from '../src/renderer/core/vision';
-import { boxFromDrag, frameFraction, framePointToScreen, pickFrameRect, toNorm, toPx, usableCrop } from '../src/shared/windowMap';import { visionBody, visionChat, visionPrompt } from '../src/main/vision';
+import { boxFromDrag, frameAspectMatches, frameFraction, framePointToScreen, pickFrameRect, toNorm, toPx, usableCrop } from '../src/shared/windowMap';import { visionBody, visionChat, visionPrompt } from '../src/main/vision';
 import {
   buildReview,
   curvePoints,
@@ -1475,6 +1475,19 @@ section('窗口画面：框、坐标、落点');
   eq(outside.x, 1, '点跑到画面外就贴边');
   eq(outside.y, 0, '另一头也一样');
   eq(frameFraction({ x: 5, y: 5 }, { width: 0, height: 0 }).x, 0, '画面尺寸是 0 时给 0');
+
+  // 画面比跟窗口现在的比例对不对得上：对不上说明窗口刚改过大小，这一拍不点
+  const rect = { x: 100, y: 100, w: 800, h: 600 };
+  eq(frameAspectMatches({ width: 800, height: 600 }, rect), true, '比例一样就算对得上');
+  eq(frameAspectMatches({ width: 400, height: 300 }, rect), true, '画面小一半但比例没变，照样对得上');
+  eq(frameAspectMatches({ width: 810, height: 600 }, rect), true, '差一点点（千分之几）不拦');
+  eq(frameAspectMatches({ width: 400, height: 400 }, rect), false, '画面比成了 1:1，窗口没变，拦下来');
+  eq(frameAspectMatches({ width: 800, height: 900 }, rect), false, '窗口变高了，画面还是旧的，拦下来');
+  eq(frameAspectMatches({ width: 0, height: 0 }, rect), false, '画面尺寸还没拿到就不点');
+  eq(frameAspectMatches({ width: 800, height: 600 }, { x: 0, y: 0, w: 0, h: 0 }), false, '窗口矩形是 0 也不点');
+  // 容差可以调：宽高比从 16:10 变成 16:9 这种变化，5% 的容差就该拦住
+  eq(frameAspectMatches({ width: 1600, height: 900 }, { x: 0, y: 0, w: 1600, h: 900 }), true, '自己跟自己永远对得上');
+  eq(frameAspectMatches({ width: 1600, height: 900 }, { x: 0, y: 0, w: 1600, h: 1000 }), false, '16:9 的画面配 16:10 的窗口，拦下来');
 }
 
 console.log(`\n界面逻辑自测：${passed} 项通过，${failed} 项失败`);

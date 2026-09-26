@@ -553,9 +553,22 @@ const main = async () => {
       check('拒点的时候页面没收到任何点击', (await pageState()).clicks.length === clicksBefore, `-> ${(await pageState()).clicks.length}`);
       const cur2 = cursorPos();
       check('拒点不动鼠标', cursorBefore.x === cur2.x && cursorBefore.y === cur2.y, `${JSON.stringify(cursorBefore)} -> ${JSON.stringify(cur2)}`);
+      touchedAppWindow = true;
       placeWindow('devtest', 30, 40, 1180, 900);
       await sleep(900);
     }
+
+    // 画面比跟窗口对不上（窗口刚改过大小、画面还没跟上）时也要拦下来：
+    // 这时候按比例算出来的点会偏，点出去才发现就晚了
+    const squashed = await app.evalIn(`
+      const r = await window.api.desktop.clickAt({ frame: { width: 400, height: 400 }, point: { x: 200, y: 200 } });
+      return r;
+    `);
+    check(
+      '画面比跟窗口对不上时不点（窗口刚改过大小）',
+      squashed.ok === false && /改了大小/.test(squashed.reason ?? ''),
+      JSON.stringify(squashed.reason ?? squashed)
+    );
   }
 
   console.log('\n五、落点提示对位');

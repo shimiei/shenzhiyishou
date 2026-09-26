@@ -12,7 +12,7 @@ import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './paths';
 import { clickAt, listWindows, watchWindow, type GeomLine } from './windowHelper';
-import { frameFraction, framePointToScreen, pickFrameRect, type FrameSize, type PxRect } from '../shared/windowMap';
+import { frameAspectMatches, frameFraction, framePointToScreen, pickFrameRect, type FrameSize, type PxRect } from '../shared/windowMap';
 import type { DesktopClickResult, DesktopGeom, DesktopMark, DesktopWindow } from '../shared/protocol';
 
 interface Target extends DesktopWindow {
@@ -292,6 +292,7 @@ function explain(reason: string | undefined): string {
   if (reason === 'minimized') return '目标窗口最小化了，点不进去';
   if (reason === 'hidden') return '目标窗口不在屏幕上';
   if (reason === 'outside') return '算出来的那一点不在目标窗口的客户区里（窗口位置变了，或者框选过时了）';
+  if (reason === 'resized') return '窗口刚改了大小，画面还没跟上，这一拍先不点，下一拍重新认过再点';
   if (reason.startsWith('covered:')) {
     const [, rootPid, targetPid] = reason.split(':');
     return `那一点上盖着别的窗口（属于进程 ${rootPid}，目标进程是 ${targetPid}），没敢点`;
@@ -311,6 +312,8 @@ export async function clickPoint(frame: FrameSize, point: { x: number; y: number
   if (g.iconic) return { ok: false, reason: '目标窗口最小化了，点不进去' };
   if (!g.visible) return { ok: false, reason: '目标窗口不在屏幕上' };
   const region = pickFrameRect(frame, g.win, g.client);
+  // 画面比跟窗口现在的比例对不上，说明窗口在这几帧里改过大小，按比例算出来的点会偏
+  if (!frameAspectMatches(frame, region.rect)) return { ok: false, reason: 'resized' };
   const at = framePointToScreen(point, frame, region.rect);
   hideMark();
   const res = await clickAt(target.hwnd, ownerHwnd, at.x, at.y);

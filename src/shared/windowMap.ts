@@ -146,3 +146,18 @@ export function frameFraction(p: FramePoint, frame: FrameSize): { x: number; y: 
     y: Math.min(Math.max(p.y / frame.height, 0), 1)
   };
 }
+
+/**
+ * 这一帧画面的比例，跟窗口现在的比例对不对得上。
+ *
+ * 窗口在这几帧里改过大小的话（比如用户在拖动窗口边缘），画面还是旧尺寸，按比例算出来的
+ * 点就会偏，而"点歪了"是点出去之后才知道的事。所以点之前先拿这个挡一道：对不上就这一拍
+ * 不点，等下一拍重新认过。默认容差 6%，宽高比从 16:10 变成 4:3 这种一眼能看出的变化会拦下来，
+ * 而无边框窗口那种几个像素的差别不拦。
+ */
+export function frameAspectMatches(frame: FrameSize, rect: PxRect, tol = 0.06): boolean {
+  const rectAspect = rect.h > 0 ? rect.w / rect.h : 0;
+  const frameAspect = frame.height > 0 ? frame.width / frame.height : 0;
+  if (!rectAspect || !frameAspect) return false;
+  return Math.abs(frameAspect - rectAspect) / rectAspect <= tol;
+}
