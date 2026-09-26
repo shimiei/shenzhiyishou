@@ -26,6 +26,8 @@ export function Toolbar(): React.ReactElement {
   const resign = useStore((s) => s.resign);
   const doHint = useStore((s) => s.doHint);
   const aiMoveNow = useStore((s) => s.aiMoveNow);
+  const toggleAiVsAi = useStore((s) => s.toggleAiVsAi);
+  const aiVsAi = useStore((s) => s.game.mode === 'ai-vs-ai');
   const toggleAnalysis = useStore((s) => s.toggleAnalysis);
   const toast = useStore((s) => s.toast);
   const analyzing = useStore((s) => s.analyzing);
@@ -121,6 +123,18 @@ export function Toolbar(): React.ReactElement {
       </button>
       <button className="btn" disabled={thinking || Boolean(finished)} onClick={() => void aiMoveNow()} title="让引擎替现在这一方走一手，走完就停；辅助模式下用它当对手（空格）">
         AI 走一手
+      </button>
+      <button
+        className={'btn' + (aiVsAi ? ' primary' : '')}
+        disabled={Boolean(finished) && !aiVsAi}
+        onClick={toggleAiVsAi}
+        title={
+          aiVsAi
+            ? '停下机机对局，回到自己下（M）'
+            : '机机对局：双方都交给 AI 自动走，从当前局面接着下。随时能开，也随时能停；想看引擎自己下出一盘再拿去复盘，就开它（M）'
+        }
+      >
+        {aiVsAi ? '停机机' : '机机对下'}
       </button>
       <button
         className={'btn' + (analyzing ? ' primary' : '')}

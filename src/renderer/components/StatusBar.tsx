@@ -11,6 +11,7 @@ export function StatusBar(): React.ReactElement {
   const thinking = useStore((s) => s.thinking);
   const finished = useStore((s) => s.finished);
   const game = useStore((s) => s.game);
+  const toggleAiVsAi = useStore((s) => s.toggleAiVsAi);
   const hint = useStore((s) => s.hint);
   const setHint = useStore((s) => s.setHint);
   const setTurn = useStore((s) => s.setTurn);
@@ -75,7 +76,20 @@ export function StatusBar(): React.ReactElement {
           </>
         ) : null}
       </span>
-      <span className="item">{modeText}</span>
+      <span className="item">
+        {/* 对弈方式就写在这儿，点一下就能开机机对局，再点一下停：想拿一盘棋去复盘时最顺手 */}
+        <button
+          className={'chip' + (game.mode === 'ai-vs-ai' ? ' active' : '')}
+          onClick={toggleAiVsAi}
+          title={
+            game.mode === 'ai-vs-ai'
+              ? '机机对局开着：双方都由 AI 自动走。点一下停下，回到自己下（M）'
+              : '点一下开机机对局：双方都交给 AI 自动走，随时能停。想生成一盘棋来复盘就用它（M）'
+          }
+        >
+          {modeText}
+        </button>
+      </span>
       {finished ? (
         <span className="item">
           <span className="badge ok">{finished}</span>

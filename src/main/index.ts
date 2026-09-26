@@ -260,6 +260,7 @@ function buildMenu(): void {
         { type: 'separator' },
         { label: '提示一手（只建议，不落子）', accelerator: 'CmdOrCtrl+H', click: cmd('hint') },
         { label: '让 AI 走一手', click: cmd('aiMove') },
+        { label: '机机对局（双方自动走，随时开关）', accelerator: 'CmdOrCtrl+M', click: cmd('toggleAiVsAi') },
         { label: '开始 / 暂停分析', accelerator: 'CmdOrCtrl+Shift+A', click: cmd('toggleAnalysis') },
         { label: '全谱分析', click: cmd('analyzeGame') },
         { label: '形势判断', accelerator: 'CmdOrCtrl+E', click: cmd('score') }

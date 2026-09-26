@@ -32,6 +32,7 @@ import {
   canSetTurn,
   colorToPlayAt,
   createTree,
+  endedByDoublePass,
   moveSourceOf,
   positionAt,
   positionKey,
@@ -711,6 +712,43 @@ section('棋谱树：每一手是谁下的');
   const sent = engineSgfFor(ai.tree, ai.id, 'B').sgf;
   ok(!sent.includes('SRC'), '送去引擎的那份没有这个自定义属性');
   ok(sent.includes('dd') && sent.includes('pp'), '两手着法本身还在');
+}
+
+section('对局到头：两边都停一手才算完');
+{
+  const t0 = createTree(19, 7.5);
+  eq(endedByDoublePass(t0, t0.root), false, '空盘不算下完');
+
+  const one = addMoveNode(t0, t0.root, BLACK, 3 * 19 + 3, { mainLine: true });
+  eq(endedByDoublePass(one.tree, one.id), false, '只停了一手（前面没棋）不算下完');
+
+  const bPass = addMoveNode(one.tree, one.id, WHITE, PASS, { mainLine: true });
+  eq(endedByDoublePass(bPass.tree, bPass.id), false, '只有末尾这一手是停，不算下完');
+
+  const bPass2 = addMoveNode(bPass.tree, bPass.id, BLACK, PASS, { mainLine: true });
+  eq(endedByDoublePass(bPass2.tree, bPass2.id), true, '连着两手停，就是下完了');
+  eq(endedByDoublePass(bPass2.tree, bPass.id), false, '回到中间那个节点上看，那时候还没完');
+
+  // 停一手之后又落子，那是接着下，不是终局
+  const again = addMoveNode(bPass.tree, bPass.id, BLACK, 15 * 19 + 15, { mainLine: true });
+  eq(endedByDoublePass(again.tree, again.id), false, '停了一手又落子，还是接着下');
+
+  // 另一边分支上的两停不影响这一条线
+  const t1 = createTree(19, 7.5);
+  const m1 = addMoveNode(t1, t1.root, BLACK, 3 * 19 + 3, { mainLine: true });
+  const passA = addMoveNode(m1.tree, m1.id, WHITE, PASS, { mainLine: true });
+  const passB = addMoveNode(passA.tree, passA.id, BLACK, PASS, { mainLine: true });
+  const branch = addMoveNode(passA.tree, passA.id, BLACK, 5 * 19 + 5, { mainLine: false });
+  eq(endedByDoublePass(passB.tree, passB.id), true, '主线末尾两停');
+  eq(endedByDoublePass(branch.tree, branch.id), false, '同一处的另一条分支照自己的路算');
+
+  // 摆子节点不占手数：盘上摆一片子再看末尾两手
+  const t2 = createTree(19, 7.5);
+  const setup = addChild(t2, t2.root, { AB: ['dd', 'pp'], AW: ['dp', 'pd'] });
+  const s1 = addMoveNode(setup.tree, setup.id, BLACK, PASS, { mainLine: true });
+  const s2 = addMoveNode(s1.tree, s1.id, WHITE, PASS, { mainLine: true });
+  eq(endedByDoublePass(s2.tree, s2.id), true, '摆子局面下连着两手停也算下完');
+  eq(endedByDoublePass(s2.tree, setup.id), false, '摆子节点本身不算一手棋');
 }
 
 section('最后一手标记：可选样式');

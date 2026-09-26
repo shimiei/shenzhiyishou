@@ -96,6 +96,9 @@ export function useShortcuts(): void {
         case 'e':
           s.setDialog('score');
           break;
+        case 'm':
+          s.toggleAiVsAi();
+          break;
         case 'b':
           s.setBrowserOpen(!s.browserOpen);
           break;

@@ -19,6 +19,7 @@ import {
   colorToPlayAt,
   createTree,
   deleteSubtree,
+  endedByDoublePass,
   infoFromTree,
   mainLineEnd,
   makeMainLine,
@@ -130,6 +131,10 @@ interface AppStore {
   engineLogs: string[];
 
   game: GameConfig;
+  /**
+   * 开"机机对局"之前是哪一档，关掉时回到这一档。不落盘：本来的对弈方式也不落盘。
+   */
+  autoReturn: 'manual' | 'vs-ai';
   finished: string | null;
   deadStones: number[];
 
@@ -192,6 +197,13 @@ interface AppStore {
   pass: () => void;
   playAiMove: (force?: boolean) => Promise<string | null>;
   maybeAiTurn: () => Promise<void>;
+  /**
+   * 机机对局随时开、随时停：开了双方都由 AI 自动走，从当前局面接着下，
+   * 停了就回到开之前那一档。生成棋谱来复盘，或者想看引擎自己怎么下，用它。
+   */
+  toggleAiVsAi: () => void;
+  /** 关掉机机对局并回到原来那一档。reason 是给提示用的说法，"下完了"不再多说一句。 */
+  stopAiVsAi: (reason: '已停' | '下完了') => void;
   /** 让引擎按当前行棋方走一手，走完就停，不接着自动走。 */
   aiMoveNow: () => Promise<void>;
   doHint: () => Promise<void>;
@@ -386,6 +398,7 @@ export const useStore = create<AppStore>((set, get) => ({
   engineLogs: [],
 
   game: { mode: 'manual', humanColor: BLACK, visits: 400, timeMs: 3000, temperature: 0, allowResign: true },
+  autoReturn: 'manual',
   finished: null,
   deadStones: [],
 
@@ -657,9 +670,7 @@ export const useStore = create<AppStore>((set, get) => ({
     const res = addMoveNode(tree, current, color, PASS, { mainLine: true, source: 'human' });
     get().commit(res.tree, res.id);
     // 连续两停，终局
-    const path = pathTo(res.tree, res.id);
-    const lastTwo = path.slice(-2).map((id) => moveAtSized(res.tree, id));
-    if (lastTwo.length === 2 && lastTwo.every((m) => m && m.point === PASS)) {
+    if (endedByDoublePass(res.tree, res.id)) {
       get().setDialog('score');
     } else {
       void get().maybeAiTurn();
@@ -694,6 +705,8 @@ export const useStore = create<AppStore>((set, get) => ({
         const t = get().tree;
         get().commit(setProp(t, t.root, 'RE', [`${winner === '黑' ? 'B' : 'W'}+R`]), get().current);
         get().toast(`${color === BLACK ? '黑方' : '白方'}认输，${winner}中盘胜`, 'success');
+        // 这盘到此为止，机机档就没必要再亮着了（认输的提示刚说过，不用再说一遍）
+        if (get().game.mode === 'ai-vs-ai') get().stopAiVsAi('下完了');
         return null;
       }
       const size = propNum(tree, tree.root, 'SZ', 19);
@@ -701,6 +714,13 @@ export const useStore = create<AppStore>((set, get) => ({
       const r2 = addMoveNode(get().tree, get().current, color, point, { mainLine: true, source: 'ai' });
       get().commit(r2.tree, r2.id);
       void get().forwardMoveToBrowser(point, color, nodeAtRequest);
+      // 引擎替人停的那一手也算：两边连续停一手就是对局到头，接着自动走会一直停下去
+      if (endedByDoublePass(r2.tree, r2.id)) {
+        if (get().game.mode === 'ai-vs-ai') get().stopAiVsAi('下完了');
+        get().toast('双方连续停一手，这一局下完了，打开形势判断看看结果', 'success');
+        get().setDialog('score');
+        return res.move;
+      }
       if (get().game.mode === 'ai-vs-ai') setTimeout(() => void get().maybeAiTurn(), 400);
       return res.move;
     } catch (e) {
@@ -727,10 +747,61 @@ export const useStore = create<AppStore>((set, get) => ({
     }
   },
 
+  toggleAiVsAi() {
+    const { game, finished, tree, current } = get();
+    if (game.mode === 'ai-vs-ai') {
+      get().stopAiVsAi('已停');
+      return;
+    }
+    if (finished) {
+      get().toast('这一局已经结束了，先新建一盘或者打开一份棋谱', 'info');
+      return;
+    }
+    // 双方都停过一手就是对局到头，开了也不会再走，不如把话说明白
+    if (endedByDoublePass(tree, current)) {
+      get().toast('这一局已经下完了（双方都停了手），要再下就新建一盘或者接着摆', 'info');
+      return;
+    }
+    set({ game: { ...game, mode: 'ai-vs-ai' }, autoReturn: game.mode, hint: null });
+    get().toast(
+      get().reviewRunning
+        ? '机机对局：轮到谁谁自动走，再点一下"停机机"就停。复盘正在算，两个引擎抢显卡，都会慢一些'
+        : '机机对局：轮到谁谁自动走，再点一下"停机机"就停',
+      'info'
+    );
+    void get().maybeAiTurn();
+  },
+
+  stopAiVsAi(reason) {
+    const { game, autoReturn, thinking } = get();
+    if (game.mode !== 'ai-vs-ai') return;
+    set({ game: { ...game, mode: autoReturn } });
+    if (reason === '下完了') return; // 终局、认输那两条提示自己会交代，别刷两条
+    /*
+     * 正算着的这一手没法半路收回（引擎是按局面问一次算一次），会照常落下，
+     * 所以把话说清楚，免得看着像"按了停还在走"。
+     */
+    const tail = thinking ? '，正在算的这一手还会落下，之后不再自动走' : '';
+    get().toast(
+      autoReturn === 'vs-ai' ? `机机对局${reason}${tail}，接着还是 AI 走你对手那一方` : `机机对局${reason}${tail}，接下来自己下`,
+      'info'
+    );
+  },
+
   async maybeAiTurn() {
-    const { game, tree, current, finished } = get();
+    const { game, tree, current, finished, thinking } = get();
     if (finished) return;
     if (game.mode === 'manual') return;
+    // 两边都停过一手就是对局到头了，别再往下走
+    if (endedByDoublePass(tree, current)) return;
+    /*
+     * 引擎正忙（刚按过提示、上一手还没算完）时按下"机机对下"，这一按不能白按：
+     * 等它收尾再接上。等的时候模式可能已经被关掉，每次醒来都重新读一遍。
+     */
+    if (thinking) {
+      setTimeout(() => void get().maybeAiTurn(), 300);
+      return;
+    }
     if (game.mode === 'ai-vs-ai') {
       void get().playAiMove();
       return;
@@ -831,7 +902,8 @@ export const useStore = create<AppStore>((set, get) => ({
       finished: null,
       deadStones: [],
       hint: null,
-      game: { ...get().game, ...opts, humanColor }
+      game: { ...get().game, ...opts, humanColor },
+      autoReturn: 'manual'
     });
     get().clearReview();
     void get().maybeAiTurn();
@@ -853,7 +925,8 @@ export const useStore = create<AppStore>((set, get) => ({
         analysis: null,
         finished: null,
         deadStones: [],
-        game: { ...get().game, mode: 'manual' }
+        game: { ...get().game, mode: 'manual' },
+        autoReturn: 'manual'
       });
       // 换了一盘棋，上一盘的复盘结果留着只会张冠李戴
       get().clearReview();
@@ -888,7 +961,8 @@ export const useStore = create<AppStore>((set, get) => ({
         analysis: null,
         finished: null,
         deadStones: [],
-        game: { ...get().game, mode: 'manual' }
+        game: { ...get().game, mode: 'manual' },
+        autoReturn: 'manual'
       });
       get().toast(`已导入局面：黑 ${ab.length} 白 ${aw.length}`, 'success');
       // 摆出来的新局面上没有可复盘的手顺，旧结果一并清掉

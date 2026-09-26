@@ -209,6 +209,9 @@ export function App(): React.ReactElement {
         case 'aiMove':
           void s.aiMoveNow();
           break;
+        case 'toggleAiVsAi':
+          s.toggleAiVsAi();
+          break;
         case 'toggleAnalysis':
           void s.toggleAnalysis();
           break;

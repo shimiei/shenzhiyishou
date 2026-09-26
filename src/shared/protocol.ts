@@ -65,6 +65,7 @@ export type AppCommand =
   | 'resign'
   | 'hint'
   | 'aiMove'
+  | 'toggleAiVsAi'
   | 'toggleAnalysis'
   | 'analyzeGame'
   | 'score'

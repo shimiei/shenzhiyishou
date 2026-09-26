@@ -220,6 +220,18 @@ export function colorToPlayAt(tree: GameTree, id: number): 1 | 2 {
   return color;
 }
 
+/**
+ * 走到这里是不是"双方连续停一手"，也就是对局到头的信号。
+ * 摆子节点不算手数，所以只看路径末尾两手的实际落子；只有一手棋、或者末尾不是两手停，都不算。
+ */
+export function endedByDoublePass(tree: GameTree, id: number): boolean {
+  const moves = pathTo(tree, id)
+    .map((nid) => moveAtSized(tree, nid))
+    .filter((m): m is { color: 1 | 2; point: number } => m !== null);
+  if (moves.length < 2) return false;
+  return moves[moves.length - 1].point === PASS && moves[moves.length - 2].point === PASS;
+}
+
 /** 盘面指纹，只认棋子，不认注释和标记。用来判断手里那条推荐还算不算数。 */
 export function positionKey(tree: GameTree, id: number): string {
   const pos = positionAt(tree, id);
