@@ -105,6 +105,58 @@ export function judgeForward(
   return 'elsewhere';
 }
 
+/** 一手点出去没核实上之后，看这一刻那边的棋盘，该接着做什么。 */
+export type RetryPlan =
+  /** 那边已经有这一手了：别再点（那一格上已经有子，再点也是白点）。 */
+  | { kind: 'landed' }
+  /** 那边还停在点之前的局面：这一下真没落上，可以就着同一点再点一次。 */
+  | { kind: 'retry' }
+  /**
+   * 那边既不是点之前的局面，也不是本地这盘：别再点了，交给实时截取按那边的局面重新对一次。
+   * mine 是"那一点上确实有子"（这一手在那边，只是那边还多了别的变化）。
+   */
+  | { kind: 'resync'; missing: number; extra: number; mine: boolean };
+
+/**
+ * 没核实的这一手，下一步怎么办。
+ *
+ * 判的顺序有讲究：先看"两边一模一样"，再看"那边还停在点之前"，最后才是别的变化。
+ * 第一件必须排在最前面：那一格上已经有子的时候再点一次没有意义，可要是把"其实落上了"
+ * 说成"没落上"又点一遍，用户看到的就是自己跟自己下。（点出去是真鼠标动作，能少点就少点。）
+ *
+ * parentCells 是点之前的局面，localCells 是本地这盘（含刚落的这一手）。
+ * 认不出、路数对不上都算"别的变化"：这时候什么都不能假定。
+ */
+export function planRetry(
+  size: number,
+  parentCells: ArrayLike<number>,
+  localCells: ArrayLike<number>,
+  capturedCells: ArrayLike<number>,
+  point: number
+): RetryPlan {
+  if (
+    capturedCells.length !== size * size ||
+    localCells.length !== size * size ||
+    parentCells.length !== size * size
+  ) {
+    return { kind: 'resync', missing: 0, extra: 0, mine: false };
+  }
+  if (sameCells(localCells, capturedCells)) return { kind: 'landed' };
+  if (sameCells(parentCells, capturedCells)) return { kind: 'retry' };
+
+  let missing = 0;
+  let extra = 0;
+  for (let i = 0; i < size * size; i++) {
+    const a = localCells[i] as Stone;
+    const b = capturedCells[i] as Stone;
+    if (a === b) continue;
+    if (b !== EMPTY && (a === EMPTY || a !== b)) missing += 1;
+    if (a !== EMPTY && (b === EMPTY || a !== b)) extra += 1;
+  }
+  const mine = point >= 0 && point < size * size && capturedCells[point] !== EMPTY;
+  return { kind: 'resync', missing, extra, mine };
+}
+
 export interface GridLike {
   originX: number;
   originY: number;

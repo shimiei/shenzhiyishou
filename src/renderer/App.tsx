@@ -196,6 +196,24 @@ export function App(): React.ReactElement {
     return () => window.clearTimeout(timer);
   }, [liveCapture, autoPlay, toWindow]);
 
+  /*
+   * 点出去但没核实的那一手，每隔一会儿再看一眼两边的棋盘。
+   *
+   * 不放在实时截取那一拍里：自动落子可以单独开着（实时截取关着），而"没落上的那一手
+   * 得自己补上"是自动落子自己的事，不该因为另一个开关关着就没人管。两处同时跑也不要紧，
+   * store 里那个正在重试的标志会让它们排着队来。
+   */
+  useEffect(() => {
+    if (!autoPlay) return;
+    let timer = 0;
+    const tick = (): void => {
+      void useStore.getState().retryPending();
+      timer = window.setTimeout(tick, 1500);
+    };
+    timer = window.setTimeout(tick, 1500);
+    return () => window.clearTimeout(timer);
+  }, [autoPlay]);
+
   // 侧栏切分支时不要残留旧提示
   useEffect(() => {
     useStore.getState().setHint(null);

@@ -9,7 +9,7 @@
 import { BLACK, DEFAULT_SETTINGS, PASS, WHITE, type GameTree, type RecordMeta, type SgfProps } from '../src/shared/types';
 import { closeTab, makeTab, openTab, stepTab, tabTitle, type BrowserTab } from '../src/renderer/core/browser/tabs';
 import { normalizeUrl } from '../src/renderer/core/browser/url';
-import { expectStone, isPassPoint, judgeForward, planMirror, pointToPage } from '../src/renderer/core/browser/mirror';
+import { expectStone, isPassPoint, judgeForward, planMirror, planRetry, pointToPage } from '../src/renderer/core/browser/mirror';
 import { adviceChip, adviceLine, isPassMove, leadText } from '../src/renderer/core/advice';
 import { engineSgfFor } from '../src/renderer/core/sgf/engineSgf';
 import { serializeSgf } from '../src/renderer/core/sgf/serialize';
@@ -883,6 +883,57 @@ section('落子核对：点完那一拍到底算不算点上');
   eq(judgeForward(19, 60, empty, new Int8Array(81)), 'unreadable', '这一拍认出的是 9 路，什么都说明不了');
   eq(judgeForward(19, 60, new Int8Array(81), after), 'unreadable', '上一拍路数不对，同样不算数');
   eq(judgeForward(19, 19 * 19, empty, after), 'unreadable', '越界的点不给结论');
+}
+
+section('自动落子：没核实的那一手，下一步重点还是重新对');
+{
+  // 点之前的局面是空盘；点上 60 之后本地这盘就是 after
+  const before = new Int8Array(19 * 19);
+  const after = Int8Array.from(before);
+  after[60] = BLACK;
+
+  // 那边还停在点之前：这一下真没落上，可以就着同一点再点一次
+  eq(planRetry(19, before, after, before, 60).kind, 'retry', '那边一点没变：这一手没落上，重点一次');
+
+  // 那边已经有这一手了：别再点（同一点上再点一次也变不出别的来）
+  eq(planRetry(19, before, after, after, 60).kind, 'landed', '那边已经有这一手：不再点');
+
+  // 那一手在那边，对手还抢在前面回了一手：不该再点，按那边对一次
+  const answered = Int8Array.from(after);
+  answered[61] = WHITE;
+  const withReply = planRetry(19, before, after, answered, 60);
+  ok(
+    withReply.kind === 'resync' && withReply.mine && withReply.missing === 1 && withReply.extra === 0,
+    '那边多了对手一手：别再点，按那边对',
+    withReply
+  );
+
+  // 那边压根不是这一手：本地这颗在那边没有，那边别处多了一颗
+  const other = Int8Array.from(before);
+  other[41] = BLACK;
+  const elsewhere = planRetry(19, before, after, other, 60);
+  ok(
+    elsewhere.kind === 'resync' && !elsewhere.mine && elsewhere.missing === 1 && elsewhere.extra === 1,
+    '那边换了一手：不再点，按那边重新对',
+    elsewhere
+  );
+
+  // 那一手带提子：本地比"点之前"少了对方一颗，那边照旧
+  const surrounded = new Int8Array(19 * 19);
+  surrounded[1] = WHITE;
+  surrounded[2] = BLACK;
+  surrounded[19] = BLACK;
+  surrounded[20] = BLACK;
+  const tookIt = Int8Array.from(surrounded);
+  tookIt[0] = BLACK;
+  tookIt[1] = 0;
+  eq(planRetry(19, surrounded, tookIt, surrounded, 0).kind, 'retry', '带提子的一手没落上：那边还是原样，重点一次');
+  eq(planRetry(19, surrounded, tookIt, tookIt, 0).kind, 'landed', '带提子的一手在那边了：不再点');
+
+  // 认不出来 / 路数对不上：什么都不能假定，别再点
+  const bad = planRetry(19, before, after, new Int8Array(81), 60);
+  ok(bad.kind === 'resync' && !bad.mine && bad.missing === 0 && bad.extra === 0, '路数对不上就不点，按重新对处理', bad);
+  ok(planRetry(19, new Int8Array(81), after, before, 60).kind === 'resync', '本地局面路数不对也算重新对');
 }
 
 section('自动落子：交叉点换算成网页坐标');

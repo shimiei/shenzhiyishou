@@ -215,14 +215,42 @@
     drawAll();
     return true;
   }
+  /*
+   * 验收用的三个钩子（只有驱动会设，用户在页面上点不到）：
+   *   __dropNext   接下来这么多下点击当"网站没接住"：点记下来，但不落子；
+   *   __dropThenPlaceAt  把点击吞掉，过这么多毫秒再自己把那一颗摆上（那边画得慢）；
+   *   __placeLater 多少毫秒之后直接在某个点摆一颗子（那边早就有这一手了，或者走的是别的点）。
+   */
+  window.__dropNext = 0;
+  window.__dropThenPlaceAt = 0;
+  let lateSeq = 0;
   cv.addEventListener('click', (e) => {
     const r = cv.getBoundingClientRect();
     const px = e.clientX - r.left;
     const py = e.clientY - r.top;
     const v = vertexAt(px, py);
     clicks.push({ px, py, vertex: v, color: toMove, at: Date.now() });
+    if (window.__dropNext > 0) {
+      window.__dropNext -= 1;
+      return;
+    }
+    if (window.__dropThenPlaceAt > 0) {
+      const ms = window.__dropThenPlaceAt;
+      window.__dropThenPlaceAt = 0;
+      const color = toMove;
+      // 排在这一下之后的那些点击不算数：这里只是把"晚一步画出来"演出来
+      const mine = ++lateSeq;
+      setTimeout(() => {
+        if (mine === lateSeq) play(v, color);
+      }, ms);
+      return;
+    }
     play(v, toMove);
   });
+  window.__placeLater = (v, color, ms) => {
+    setTimeout(() => play(v, color), ms);
+    return true;
+  };
   // 对手自动走一手（验收时用 CDP 调，或者直接点按钮）
   window.__opponentMove = (v) => {
     if (v) return play(v, toMove);

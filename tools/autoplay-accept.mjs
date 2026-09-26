@@ -208,6 +208,20 @@ const main = async () => {
   const localMoves = `return window.__szys.getState().past.length`;
   const autoOn = `return window.__szys.getState().settings.autoPlay`;
 
+  /*
+   * 窗口被最小化（或者被别的窗口整个盖住）的时候，截网页会一直不返回：
+   * 这时候实时截取和自动落子都只会在状态行里说"截取失败"，一项都验不出来。
+   * 跑驱动的时候桌面是用户的，随时可能把这块窗口收起来，所以每一段之前问一句，
+   * 不在了就摆回来。只看渲染进程自己的可见性，不去动别的窗口。
+   */
+  async function ensureWindow() {
+    const hidden = await app.evalIn(`return document.visibilityState !== 'visible'`).catch(() => false);
+    if (!hidden) return false;
+    console.log('  窗口不在屏幕上了，摆回来：' + resize(1500, 940));
+    await sleep(900);
+    return true;
+  }
+
   /** 把假网页板刷回空盘。刷新之后那条调试连接就断了，要重连。 */
   async function reloadPage() {
     await page.evalIn(`location.reload(); return true;`).catch(() => {});
@@ -224,6 +238,7 @@ const main = async () => {
 
   console.log('\n一、焦点：自动落子之后，焦点不能跑到网页里去');
   {
+    await ensureWindow();
     await app.evalIn(`
       const c = document.querySelector('canvas');
       const r = c.getBoundingClientRect();
@@ -258,11 +273,13 @@ const main = async () => {
     check('网页那一层没拿到键盘焦点', pageAfter === false, String(pageAfter));
     check('这一手真的点到网页上了（K10）', stones.split(' ').includes('K10'), stones);
     check('状态行说的是点上了', Boolean(said) && /点到网页上/.test(said), said ?? '(空)');
-    await app.shot(`${SHOT_DIR}\\szys-autoplay-focus.png`);
+    // 截图只是留个档：桌面被别的窗口盖住时它可能拍不下来，不该把整轮带走
+    await app.shot(`${SHOT_DIR}\\szys-autoplay-focus.png`).catch(() => {});
   }
 
   console.log('\n二、网页挪了位置之后，自动落子还得认得出来，且不许自己关掉');
   {
+    await ensureWindow();
     await page.evalIn(`
       const d = document.createElement('div');
       d.id = 'shift';
@@ -286,7 +303,7 @@ const main = async () => {
     check('挪位之后状态行说的是点上了', Boolean(said) && /点到网页上/.test(said), said ?? '(空)');
     check('开关还开着（不再一句话不说就自己关掉）', on === true);
     check('网页与本地手数对得上', (await app.evalIn(localMoves)) === after.split(' ').filter(Boolean).length, `${await app.evalIn(localMoves)} / ${after}`);
-    await app.shot(`${SHOT_DIR}\\szys-autoplay-shift.png`);
+    await app.shot(`${SHOT_DIR}\\szys-autoplay-shift.png`).catch(() => {});
   }
 
   console.log('\n三、工具条上的"AI 执黑 / AI 执白"');
@@ -419,6 +436,7 @@ const main = async () => {
   console.log('\n六、AI 自己走的那一手也会点到网页上（两件一起用）');
   {
     // 网页回到空盘，本地也开一盘空的，两边对齐
+    await ensureWindow();
     await reloadPage();
     await app.evalIn(clickBtn('新建标签'));
     await sleep(600);
@@ -435,13 +453,170 @@ const main = async () => {
     console.log(`  网页上的子：${stones || '(空)'}`);
     check('AI 自己落的那一手也点到网页上了', stones.split(' ').filter(Boolean).length === 1, stones || '(空)');
     check('两边手数一致', (await app.evalIn(localMoves)) === 1, `${await app.evalIn(localMoves)}`);
-    await app.shot(`${SHOT_DIR}\\szys-autoplay-ai-side.png`);
+    await app.shot(`${SHOT_DIR}\\szys-autoplay-ai-side.png`).catch(() => {});
+    // 收尾：关掉两个开关，别让后面的人接手时还在往网页上点
+    await app
+      .evalIn(`
+      const s = window.__szys.getState();
+      await s.setAutoPlay(false);
+      await s.setLiveCapture(false);
+      s.setAiSide(null);
+      return true;
+    `)
+      .catch(() => {});
+  }
+
+  console.log('\n七、点出去没落上：看一眼两边，一致就重点一次，不一致就按那边重新对');
+  {
+    const syncNow = `return ${syncText}`;
+    const syncOk = `return (() => { const s = window.__szys.getState().sync; return s ? s.ok : null; })()`;
+    const clicksAt = (v) => `return window.__state().clicks.filter((c) => c.vertex === ${JSON.stringify(v)}).length`;
+    /** 等状态行冒出一句合得上这个样子的新话 */
+    const waitText = async (re, ms = 40000) => {
+      const deadline = Date.now() + ms;
+      let last = '';
+      for (;;) {
+        last = await app.evalIn(syncNow);
+        if (last && re.test(last)) return last;
+        if (Date.now() > deadline) return last;
+        await sleep(250);
+      }
+    };
+    /*
+     * 有些话是一闪而过的：实时截取每拍都会重写状态行，"先不点了""按那边重新对一次"这种
+     * 说完就可能被下一句顶掉（间隔还不到半秒），靠轮询抓不住。所以挂一个订阅，
+     * 让程序把出现过的每一句都记下来，再问它"这一句出现过没有"。
+     */
+    await app.evalIn(`
+      if (!window.__syncLog) {
+        window.__syncLog = [];
+        window.__szys.subscribe((s) => {
+          const t = s.sync ? s.sync.text : null;
+          if (t && window.__syncLog[window.__syncLog.length - 1] !== t) window.__syncLog.push(t);
+        });
+      }
+      window.__syncLog.length = 0;
+      return true;
+    `);
+    const syncLog = `return (window.__syncLog || []).slice()`;
+    const waitSeen = async (re, ms = 45000) => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        const log = (await app.evalIn(syncLog)) ?? [];
+        const hit = log.find((t) => re.test(t));
+        if (hit) return { ok: true, text: hit, seen: log };
+        if (Date.now() > deadline) return { ok: false, text: log[log.length - 1] ?? '', seen: log };
+        await sleep(300);
+      }
+    };
+    const waitStone = async (v, ms = 30000) => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        const s = await page.evalIn(pageStones);
+        if (s.split(' ').includes(v)) return true;
+        if (Date.now() > deadline) return false;
+        await sleep(400);
+      }
+    };
+    /** 一盘的干净起点：网页空盘 + 本地新建一盘的空白 */
+    const freshBoth = async () => {
+      await ensureWindow();
+      await reloadPage();
+      await app.evalIn(clickBtn('新建标签'));
+      await sleep(700);
+      await app.evalIn(`await window.__szys.getState().setLiveCapture(true); return true;`);
+      await app.evalIn(`await window.__szys.getState().setAutoPlay(true); return true;`);
+      await sleep(900);
+    };
+
+    // 七之一：那一下网站没接住（点击被吞掉）。看一眼两边：那边还是原样，就应该就着同一点再点一次
+    await freshBoth();
+    {
+      await page.evalIn(`window.__dropNext = 1; return window.__dropNext;`);
+      await app.evalIn(`window.__szys.getState().playColor(1, 9 * 19 + 9, 'local'); return true;`);
+      const said = await waitText(/落上/);
+      const landed = await waitStone('K10', 5000);
+      await sleep(1200);
+      const n = await page.evalIn(clicksAt('K10'));
+      const stones = await page.evalIn(pageStones);
+      console.log(`  状态行：${said}`);
+      console.log(`  同一点的点击次数：${n}，网页上的子：${stones}`);
+      check('没接住的那一手真的落上了（重点一次奏效）', landed, stones || '(空)');
+      check('同一点上点了两次（第一次没接住，第二次落上）', n === 2, String(n));
+      check('网页上只有这一颗子（没点成两颗）', stones.split(' ').filter(Boolean).join(' ') === 'K10', stones);
+      check('本地还是只有这一手', (await app.evalIn(localMoves)) === 1, String(await app.evalIn(localMoves)));
+      check('状态行说的是落上了', /落上/.test(said), said);
+    }
+
+    // 七之二：那边画得慢（两秒半才出来）。该等它出来，不能又点一次
+    await freshBoth();
+    {
+      await page.evalIn(`window.__dropThenPlaceAt = 2500; return window.__dropThenPlaceAt;`);
+      await app.evalIn(`window.__szys.getState().playColor(1, 9 * 19 + 9, 'local'); return true;`);
+      const said = await waitText(/点到网页上/);
+      await sleep(1500);
+      const n = await page.evalIn(clicksAt('K10'));
+      const stones = await page.evalIn(pageStones);
+      console.log(`  状态行：${said}`);
+      console.log(`  同一点的点击次数：${n}，网页上的子：${stones}`);
+      check('慢一点画出来的那一手也算落上了', stones.split(' ').includes('K10'), stones);
+      check('两边一致就不再点（同一点只点了一次）', n === 1, String(n));
+      check('状态行说的是点上了', /点到网页上/.test(said), said);
+    }
+
+    // 七之三：那边一直不接（每次点击都被吞掉）。点几次就该停，并且如实说
+    await freshBoth();
+    {
+      await page.evalIn(`window.__dropNext = 99; return window.__dropNext;`);
+      await app.evalIn(`window.__szys.getState().playColor(1, 9 * 19 + 9, 'local'); return true;`);
+      const gaveUp = await waitSeen(/先不点了/);
+      const n = await page.evalIn(clicksAt('K10'));
+      console.log(`  状态行：${gaveUp.text}`);
+      console.log(`  这一路见过的话：${gaveUp.seen.length} 句`);
+      console.log(`  同一点的点击次数：${n}`);
+      check('点到一定次数就停，不会没完没了地往那边点', n === 3, String(n));
+      check(
+        '停的时候如实说"先不点了"，还告诉用户怎么办',
+        gaveUp.ok && /补上这一手|撤掉/.test(gaveUp.text),
+        gaveUp.ok ? gaveUp.text : JSON.stringify(gaveUp.seen)
+      );
+      check('开关还开着（不再一句话不说就自己关掉）', (await app.evalIn(autoOn)) === true);
+      // 实时截取下一拍会比出"本地多一颗"：那句话该说清多的就是这一手、怎么办
+      const hint = await waitText(/没落上的那一手/, 20000);
+      console.log(`  状态行（实时截取）：${hint}`);
+      check('"对不上"那句里点明了多出来的是哪一手', /没落上的那一手/.test(hint) && /K10/.test(hint), hint);
+      check('本地这一手没被它悄悄删掉', (await app.evalIn(localMoves)) === 1, String(await app.evalIn(localMoves)));
+    }
+
+    // 七之四：那边根本不是这一手（点歪了/别人在动）。这就不该再点，按那边重新对
+    await freshBoth();
+    {
+      await page.evalIn(`window.__dropNext = 1; return window.__dropNext;`);
+      await app.evalIn(`window.__szys.getState().playColor(1, 9 * 19 + 9, 'local'); return true;`);
+      // 等 app 那一下点出去（记在 clicks 里），然后把别的点上的子摆上：那边不是这一手
+      for (let i = 0; i < 40; i++) {
+        if ((await page.evalIn(clicksAt('K10'))) >= 1) break;
+        await sleep(300);
+      }
+      await page.evalIn(`window.__placeLater('Q4', 'b', 400); return true;`);
+      const synced = await waitSeen(/重新对/);
+      await sleep(2500);
+      const n = await page.evalIn(clicksAt('K10'));
+      const last = await app.evalIn(syncNow);
+      console.log(`  状态行：${synced.text}`);
+      console.log(`  随后：${last}`);
+      console.log(`  同一点的点击次数：${n}`);
+      check('那边不是这一手就说"按那边重新对一次"', synced.ok, synced.ok ? synced.text : JSON.stringify(synced.seen));
+      check('这种情况不再重复点（同一点只点了一次）', n === 1, String(n));
+      check('重新对之后状态行如实说对不上、并说清多的这一手怎么办', /对不上/.test(last) && /没落上的那一手/.test(last), last);
+      check('开关还开着', (await app.evalIn(autoOn)) === true && (await app.evalIn(syncOk)) === false);
+    }
+
     // 收尾：关掉两个开关，别让后面的人接手时还在往网页上点
     await app.evalIn(`
       const s = window.__szys.getState();
       await s.setAutoPlay(false);
       await s.setLiveCapture(false);
-      s.setAiSide(null);
       return true;
     `);
   }
@@ -458,5 +633,6 @@ const main = async () => {
 
 main().catch((e) => {
   console.error('驱动出错：', e.message);
+  console.error(e.stack ?? '');
   process.exit(2);
 });

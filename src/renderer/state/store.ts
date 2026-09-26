@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   BLACK,
   DEFAULT_SETTINGS,
+  EMPTY,
   PASS,
   WHITE,
   type AnalysisSnapshot,
@@ -71,7 +72,7 @@ import {
 import { fromSession, toSession } from '../core/boards/session';
 import { Position } from '../core/go/position';
 import { closeTab, makeTab, openTab, stepTab, type BrowserTab } from '../core/browser/tabs';
-import { judgeForward, isPassPoint, planMirror, pointToPage } from '../core/browser/mirror';
+import { expectStone, judgeForward, isPassPoint, planMirror, planRetry, pointToPage } from '../core/browser/mirror';
 import { imageDataFromUrl } from '../core/cv/image';
 import { recognizeBoard, type GridFit, type ImageBox } from '../core/cv/recognize';
 import {
@@ -358,8 +359,13 @@ interface AppStore {
   setLiveCapture: (v: boolean) => Promise<void>;
   /** 自动落子开关：本程序里落的子，同步到目标棋盘上（内置浏览器是注入点击，外部窗口是真鼠标）。 */
   setAutoPlay: (v: boolean) => Promise<void>;
-  /** 实时截取的一拍：取一帧、识别、跟本地局面比，刚好差一手就接上。定时器在 App 里。 */
-  pollSource: () => Promise<void>;
+  /**
+   * 实时截取的一拍：取一帧、识别、跟本地局面比，刚好差一手就接上。定时器在 App 里。
+   * force 是"别管刚才点过一手"（自动落子点歪了要立刻按那边重新对的时候用）。
+   */
+  pollSource: (opts?: { force?: boolean }) => Promise<void>;
+  /** 点出去但没核实的那一手：看一眼两边的棋盘，该重点的重点、该重新对的重新对。 */
+  retryPending: () => Promise<void>;
   /** 把一手棋落到目标棋盘上，点完再取几帧核对。parentId 是这一手接在哪个节点后面。 */
   forwardMove: (point: number, color: 1 | 2, parentId: number) => Promise<boolean>;
 
@@ -2328,51 +2334,48 @@ export const useStore = create<AppStore>((set, get) => ({
     }
   },
 
-  async pollSource() {
+  async pollSource(opts) {
     const st = get();
     if (!st.settings.liveCapture || !st.browserOpen || st.finished) return;
     // 引擎正在想棋、或者刚点出去一手还没落定，这两段时间里两边本来就对不齐
-    if (st.thinkingBoard !== null || forwarding) return;
-    if (polling) return;
-    if (Date.now() - lastForwardAt < 2200) return;
+    if (st.thinkingBoard !== null || forwarding || retrying) return;
+    if (polling) {
+      /*
+       * 上一拍要是卡住了（截图那个 Promise 挂着不还），这里不能一直等：
+       * 卡着的话实时截取再也不会动，界面上那句提示就永远是老的那一句，
+       * 用户看到的就是"同步卡死了"。过了上限就把它当作已经没了，这一拍重新开始。
+       */
+      if (Date.now() - pollingSince < POLL_STUCK_MS) return;
+      polling = false;
+      setSync('实时截取：上一拍卡住了，重新开始看', false);
+    }
+    if (!opts?.force && Date.now() - lastForwardAt < 2200) return;
     // 取帧是异步的：开始这一拍时记下是哪一盘，回来发现换了盘就作废，
     // 不然目标画面上那一手会接到另一盘的棋谱上
     const board = st.activeBoard;
     polling = true;
+    pollingSince = Date.now();
     try {
-      const shot = await shotSource();
-      if (typeof shot === 'string') {
-        setSync(shot, false);
+      /*
+       * 有一手点出去还没核实：这一拍先办它。那会儿本地本来就比那边多一颗
+       * （多出来的正是这一手），拿那套比对只会一直报"本地多一颗，先不动"。
+       */
+      if (pending) {
+        await retryPendingForward();
         return;
       }
-      const now = get();
-      if (now.activeBoard !== board) return;
-      const size = propNum(now.tree, now.tree.root, 'SZ', 19);
-      if (shot.size !== size) {
-        setSync(`网页上是 ${shot.size} 路，这盘是 ${size} 路，对不上`, false);
-        return;
-      }
-      const cur = now.current;
-      const plan = planMirror(size, positionAt(now.tree, cur).cells, now.turnOverride ?? colorToPlayAt(now.tree, cur), shot.stones);
-      if (plan.kind === 'same') {
-        setSync('和网页一致', true);
-        return;
-      }
-      if (plan.kind === 'mismatch') {
-        setSync(`跟网页对不上：网页上多 ${plan.missing} 颗，本地多 ${plan.extra} 颗，先不动`, false);
-        return;
-      }
-      // 只接"刚好一手"，而且这个节点还没分叉才接：不然会凭空多出一条分支，
-      // 用户自己的棋谱树被搅乱了比少接一手麻烦得多。
-      if ((now.tree.nodes[cur]?.children.length ?? 0) > 0) {
-        setSync('网页上多了一手，但这里已经不止一种下法，没敢接', false);
-        return;
-      }
-      get().playColor(plan.color, plan.point, 'remote');
-      setSync(`接上网页的一手：${Position.gtpVertex(plan.point, size)}`, true);
+      await reconcileSource(board);
+    } catch (e) {
+      // 这一拍里出的岔子只该毁这一拍：抛出去会让实时截取整个停在那儿
+      setSync('实时截取：这一拍出错了（' + (e instanceof Error ? e.message : String(e)) + '），下一拍接着看', false);
     } finally {
       polling = false;
     }
+  },
+
+  /** 没核实的那一手：每一拍上来看一眼两边的棋盘（定时器在 App 里）。 */
+  async retryPending() {
+    await retryPendingForward();
   },
 
   async forwardMove(point, color, parentId) {
@@ -2400,10 +2403,21 @@ export const useStore = create<AppStore>((set, get) => ({
       return false;
     }
     // 这一拍正在取帧就先等它取完，别把这次点击丢了
-    for (let i = 0; i < 20 && (polling || forwarding); i++) await sleep(50);
-    if (polling || forwarding) return false;
+    for (let i = 0; i < 20 && (polling || forwarding || retrying); i++) await sleep(50);
+    if (polling || forwarding || retrying) return false;
     // 等这一拍的工夫里可能已经换到别的棋盘上了：那一刻的谱面和现在这盘不是一回事
     if (get().activeBoard !== st.activeBoard) return false;
+    /*
+     * 有一手点出去还没核实：先把它办了再谈这一手。那边要还停在上一手之前，
+     * 这一手点出去就是往一个还没跟上来的棋盘上落子。
+     */
+    if (pending) {
+      await retryPendingForward();
+      if (pending) {
+        setSync('自动落子：上一手还没在那边落上，这一手先不点（下一拍接着给它重点）', false);
+        return false;
+      }
+    }
     /*
      * 要点的这一手是接在 parentId 后面的。那个节点的局面在这段等待里要是变过
      * （用户摆子、撤了重下），点出去就跟目标那头的棋盘对不上了，宁可不点。
@@ -2451,73 +2465,50 @@ export const useStore = create<AppStore>((set, get) => ({
         );
         return false;
       }
-      const frame = { width: before.imageWidth, height: before.imageHeight };
-      const at = pointToPage(before.grid, point, { width: before.viewWidth, height: before.viewHeight }, frame);
-      if (!at) {
-        setSync(`自动落子：算不出这个交叉点在${toWindow ? '窗口画面' : '网页'}上的位置`, false);
+      // 两边在这一手之前是对上的：先前"没落上"那条记号的账已经清了
+      unlanded = null;
+      const fail = await clickTarget(before, point, color, toWindow);
+      if (fail) {
+        setSync('自动落子：' + fail, false);
+        get().toast('这一手没能点进去：' + fail, 'error');
         return false;
-      }
-      if (toWindow) {
-        // 真鼠标：主进程那边先把窗口拿到前台、把光标搬过去点一下、再把光标与前台还回来。
-        // 点之前它会自己核对一遍那个点确实属于目标窗口（被别的窗口盖住就一下都不点）。
-        const res = await withTimeout(
-          window.api.desktop.clickAt({ frame, point: at }),
-          9000,
-          '点那个窗口没回应'
-        );
-        if (!res.ok) {
-          setSync('自动落子：' + (res.reason ?? '没点进去'), false);
-          get().toast('这一手没能点进去：' + (res.reason ?? '没点进去'), 'error');
-          return false;
-        }
-        // 点完在这儿留个痕，用户一眼能看见刚才点的是哪一点
-        if (get().settings.windowMark) void window.api.desktop.mark({ frame, point: at, color, ttlMs: 900 });
-        set({ markAt: { x: at.x, y: at.y, color } });
-      } else {
-        await withTimeout(window.api.browser.click(before.id, at.x, at.y), 3000, '点网页没回应');
       }
       lastForwardAt = Date.now();
       /*
        * 点完核对这一下到底落上没有。多等几拍：网页那头常常要先跟服务器换一次手、
-       * 客户端那头也有落子动画，只取一两拍会把已经落上的看成没落上。判据也放宽成
-       * "那一点上有没有子"，不求颜色对（颜色认错是最常见的误读，拿它判成败会误报）。
+       * 客户端那头也有落子动画，只取一两拍会把已经落上的看成没落上。
        */
-      let unreadable = 0;
-      let elsewhere = false;
-      for (const wait of [300, 500, 800, 1200, 1800]) {
-        await sleep(wait);
-        const after = await shotSource();
-        if (typeof after === 'string' || after.size !== size) {
-          unreadable += 1;
-          continue;
-        }
-        const verdict = judgeForward(size, point, before.stones, after.stones);
-        if (verdict === 'landed') {
-          setSync(`已点到${toWindow ? '那个窗口上' : '网页上'}：${Position.gtpVertex(point, size)}`, true);
-          return true;
-        }
-        if (verdict === 'elsewhere') elsewhere = true;
+      const verdict = await confirmLanded(before.stones, point, size, [300, 500, 800, 1200, 1800]);
+      if (verdict === 'landed') {
+        setSync(`已点到${toWindow ? '那个窗口上' : '网页上'}：${Position.gtpVertex(point, size)}`, true);
+        return true;
+      }
+      if (verdict === 'elsewhere') {
+        /*
+         * 那边变了，但变的不是这一手：点歪了，或者那边别人在动。这一手不再重试
+         * （同一点上再点一次也变不出这一手来），按那边现在的局面重新对一次。
+         */
+        unlanded = { boardId: st.activeBoard, point, color, size, tries: 1 };
+        setSync(`自动落子：${toWindow ? '那边' : '网页上'}多了子，但不是这一手（点歪了，或者那儿别人在动），按那边重新对一次`, false);
+        await reconcileSource(st.activeBoard);
+        return false;
       }
       /*
-       * 核不上不把开关自己关掉。真正拦住"点错棋盘"的是点之前那一道核对（目标必须正好
-       * 停在点之前的局面），那一道不过则一手都不点；点完这一道只是确认，确认不了就把话
-       * 说明白、这一手不再管，下一手接着试。从前这里会把开关关掉，于是网页回得慢一点、
-       * 或者棋盘挪了位认不出来，功能就悄悄停了，用户还以为是自己点错了。
+       * 没等到这一手出现。别急着说"那边没渲染"：先把这一手记下来，接着看两边的棋盘，
+       * 那边还停在点之前的局面就重点一次，已经落上就不再点，两边不是一回事就按那边重新对。
        */
-      setSync(
-        elsewhere
-          ? `自动落子：${toWindow ? '那边' : '网页上'}多了子，但不是这一手（点歪了，或者那儿别人在动）`
-          : unreadable === 5
-            ? `自动落子：点了，但核不上（这几拍都没认出${toWindow ? '窗口里的' : '网页上的'}棋盘）`
-            : '自动落子：这一手好像没落上（那边还是原来的局面）',
-        false
-      );
-      get().toast(
-        elsewhere
-          ? '这一手点到别处去了：那边多的子不在这一手的位置上。开关还开着，对上了接着点'
-          : '这一手没能核对上：那边可能还没画出来，也可能轮到对手在走。开关还开着，下一手再试',
-        'error'
-      );
+      pending = {
+        boardId: st.activeBoard,
+        parentId,
+        parentKey: positionKey(get().tree, parentId),
+        point,
+        color,
+        size,
+        tries: 1,
+        firstAt: Date.now()
+      };
+      setSync(`自动落子：这一手还没在那边看到（${Position.gtpVertex(point, size)}），再看一眼接着点`, false);
+      await retryPendingForward();
       return false;
     } finally {
       forwarding = false;
@@ -2526,6 +2517,213 @@ export const useStore = create<AppStore>((set, get) => ({
     }
   }
 }));
+
+/** 提示里说"哪边"：内置浏览器是网页，固定窗口是那边那个窗口。 */
+function whereLabel(): string {
+  return useStore.getState().settings.captureSource === 'window' ? '那边窗口' : '网页';
+}
+
+/**
+ * 实时截取的一拍：取一帧、认出棋盘、跟本地这盘比。那边正好多一手就接上，别的一概不动。
+ *
+ * 没核实的那一手也走这里（"按那边重新对一次"），所以这里不碰 polling 那几个标志，
+ * 由调用方管。
+ */
+async function reconcileSource(board: string): Promise<void> {
+  const shot = await shotSource();
+  if (typeof shot === 'string') {
+    setSync(shot, false);
+    return;
+  }
+  const now = useStore.getState();
+  if (now.activeBoard !== board) return;
+  const where = whereLabel();
+  const size = propNum(now.tree, now.tree.root, 'SZ', 19);
+  if (shot.size !== size) {
+    setSync(`${where}是 ${shot.size} 路，这盘是 ${size} 路，对不上`, false);
+    return;
+  }
+  const cur = now.current;
+  const local = positionAt(now.tree, cur).cells;
+  const plan = planMirror(size, local, now.turnOverride ?? colorToPlayAt(now.tree, cur), shot.stones);
+  if (plan.kind === 'same') {
+    unlanded = null;
+    setSync(`和${where}一致`, true);
+    return;
+  }
+  if (plan.kind === 'mismatch') {
+    /*
+     * "本地多一颗"最常见的一种就是刚才那一手没在那边落上。要是能认出正是它，
+     * 就把话说到底：多的就是这一手，在那边补上、或者撤掉本地这一手，两边就回来了。
+     */
+    const u = unlanded;
+    const hint =
+      u && u.boardId === board && u.point >= 0 && u.point < size * size && local[u.point] === u.color && shot.stones[u.point] === EMPTY
+        ? `（多的大概就是没落上的那一手 ${Position.gtpVertex(u.point, size)}：点了 ${u.tries} 次那边都没出现，在那边补上这一手、或者把本地这一手撤掉）`
+        : '';
+    setSync(`跟${where}对不上：${where}多 ${plan.missing} 颗，本地多 ${plan.extra} 颗，先不动${hint}`, false);
+    return;
+  }
+  // 只接"刚好一手"，而且这个节点还没分叉才接：不然会凭空多出一条分支，
+  // 用户自己的棋谱树被搅乱了比少接一手麻烦得多。
+  if ((now.tree.nodes[cur]?.children.length ?? 0) > 0) {
+    setSync(`${where}多了一手，但这里已经不止一种下法，没敢接`, false);
+    return;
+  }
+  now.playColor(plan.color, plan.point, 'remote');
+  setSync(`接上的一手：${Position.gtpVertex(plan.point, size)}`, true);
+}
+
+/**
+ * 把一手棋点到目标画面上（网页注入点击，或者主进程搬真鼠标点那个窗口）。
+ * 点成了返回 null，没点成返回一句人话。
+ */
+async function clickTarget(shot: PageShot, point: number, color: 1 | 2, toWindow: boolean): Promise<string | null> {
+  const frame = { width: shot.imageWidth, height: shot.imageHeight };
+  const at = pointToPage(shot.grid, point, { width: shot.viewWidth, height: shot.viewHeight }, frame);
+  if (!at) return `算不出这个交叉点在${toWindow ? '窗口画面' : '网页'}上的位置`;
+  try {
+    if (toWindow) {
+      if (useStore.getState().desktopGeom?.iconic) return '那个窗口最小化了，点不进去';
+      // 真鼠标：主进程那边先把窗口拿到前台、把光标搬过去点一下、再把光标与前台还回来。
+      // 点之前它会自己核对一遍那个点确实属于目标窗口（被别的窗口盖住就一下都不点）。
+      const res = await withTimeout(window.api.desktop.clickAt({ frame, point: at }), 9000, '点那个窗口没回应');
+      if (!res.ok) return res.reason ?? '没点进去';
+      // 点完在这儿留个痕，用户一眼能看见刚才点的是哪一点
+      if (useStore.getState().settings.windowMark) void window.api.desktop.mark({ frame, point: at, color, ttlMs: 900 });
+      useStore.setState({ markAt: { x: at.x, y: at.y, color } });
+    } else {
+      await withTimeout(window.api.browser.click(shot.id, at.x, at.y), 3000, '点网页没回应');
+    }
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+  return null;
+}
+
+/** 点完等几拍，看那一手在那边出现了没有。 */
+async function confirmLanded(
+  beforeStones: ArrayLike<number>,
+  point: number,
+  size: number,
+  waits: number[]
+): Promise<'landed' | 'elsewhere' | 'unreadable'> {
+  let elsewhere = false;
+  for (const wait of waits) {
+    await sleep(wait);
+    const after = await shotSource();
+    if (typeof after === 'string' || after.size !== size) continue;
+    const verdict = judgeForward(size, point, beforeStones, after.stones);
+    if (verdict === 'landed') return 'landed';
+    if (verdict === 'elsewhere') elsewhere = true;
+  }
+  return elsewhere ? 'elsewhere' : 'unreadable';
+}
+
+/**
+ * 没核实的那一手，再看一眼那边的棋盘接着办：
+ *
+ * 两边一样 → 其实已经落上了，不再点（那一格上已经有子，再点也是白点，用户看着像自己跟自己下）；
+ * 那边还停在点之前的局面 → 这一下真没落上，就着同一点再点一次；
+ * 两样都不是 → 不再点了，交给实时截取按那边的局面重新对一次。
+ *
+ * 次数与时间都有上限：那边要是打不开、或者一直认不出来，点十几次没有意义，
+ * 到点就如实说"这一手没在那边落上"，把话留给用户，而不是没完没了地往那边点。
+ */
+async function retryPendingForward(): Promise<void> {
+  const p = pending;
+  if (!p || retrying) return;
+  retrying = true;
+  try {
+    const st = useStore.getState();
+    if (!st.settings.autoPlay || st.activeBoard !== p.boardId) {
+      pending = null;
+      return;
+    }
+    // 用户悔棋、摆子、换了谱面：这一手在本地都不成立了，更不该往那边点
+    if (!st.tree.nodes[p.parentId] || positionKey(st.tree, p.parentId) !== p.parentKey) {
+      pending = null;
+      setSync('自动落子：谱面变了，没核实的那一手不再重点', false);
+      return;
+    }
+    // 本地这一手要是被撤掉了（悔棋、或者翻到别的局面去了），也不再往那边点
+    const here = positionAt(st.tree, st.current).cells;
+    if (!expectStone(p.size, here, p.point, p.color)) {
+      pending = null;
+      setSync('自动落子：这一手在本地已经撤了，不再往那边点', false);
+      return;
+    }
+    if (p.tries >= MAX_FORWARD_TRIES || Date.now() - p.firstAt > FORWARD_RETRY_MS) {
+      pending = null;
+      /*
+       * 记下"本地这一手那边没有"。实时截取的下一拍会比出"本地多一颗"，
+       * 有了这条就能把话说清楚：多的正是这一手，怎么办也说得出。
+       */
+      unlanded = { boardId: p.boardId, point: p.point, color: p.color, size: p.size, tries: p.tries };
+      setSync(
+        `自动落子：这一手点了 ${p.tries} 次都没在那边出现，先不点了。本地这一手留着（在那边补上这一手，或者把本地这一手撤掉），对了实时截取会接着接`,
+        false
+      );
+      st.toast('这一手没能点到那边去：那边一直没出现这一手。开关还开着，下一手接着试', 'error');
+      return;
+    }
+    const shot = await shotSource();
+    if (typeof shot === 'string') {
+      setSync('自动落子：还没核实的那一手，' + shot, false);
+      return;
+    }
+    if (shot.size !== p.size) {
+      pending = null;
+      setSync(`自动落子：那边是 ${shot.size} 路，这盘是 ${p.size} 路，没核实的那一手不再点`, false);
+      return;
+    }
+    const parentCells = positionAt(st.tree, p.parentId).cells;
+    const plan = planRetry(p.size, parentCells, here, shot.stones, p.point);
+    if (plan.kind === 'landed') {
+      pending = null;
+      unlanded = null;
+      setSync(`这一手其实在那边了：${Position.gtpVertex(p.point, p.size)}`, true);
+      return;
+    }
+    if (plan.kind === 'resync') {
+      /*
+       * 那边既不是这一手，也不是点之前的局面。别再点了：同一点上再点一次变不出这一手来，
+       * 而且那边很可能已经不是这一盘棋了。按那边现在的局面重新对一次（能接的接上）。
+       */
+      pending = null;
+      unlanded = { boardId: p.boardId, point: p.point, color: p.color, size: p.size, tries: p.tries };
+      setSync(
+        plan.mine
+          ? `自动落子：这一手在那边，但那边还有别的变化（那边多 ${plan.missing} 颗，本地多 ${plan.extra} 颗），按那边重新对一次`
+          : `自动落子：那边不是这一手（那边多 ${plan.missing} 颗，本地多 ${plan.extra} 颗），不再重点，按那边重新对一次`,
+        false
+      );
+      await reconcileSource(p.boardId);
+      return;
+    }
+    // 那边还停在点之前的局面：这一下确实没落上，就着同一点再点一次
+    const toWindow = st.settings.captureSource === 'window';
+    const fail = await clickTarget(shot, p.point, p.color, toWindow);
+    p.tries += 1;
+    if (fail) {
+      setSync(`自动落子：第 ${p.tries} 次点也没点进去（${fail}），下一拍接着试`, false);
+      return;
+    }
+    lastForwardAt = Date.now();
+    const verdict = await confirmLanded(shot.stones, p.point, p.size, [400, 700, 1100]);
+    if (verdict === 'landed') {
+      pending = null;
+      setSync(`再点一次落上了：${Position.gtpVertex(p.point, p.size)}（${toWindow ? '那个窗口' : '网页'}那一下没接住）`, true);
+      return;
+    }
+    setSync(`自动落子：这一手还没在那边出现（点了 ${p.tries} 次），下一拍接着试`, false);
+  } catch (e) {
+    // 重试这条路上出岔子不该把实时截取也带停：说一句，下一拍接着来
+    setSync('自动落子：重试这一下出错了（' + (e instanceof Error ? e.message : String(e)) + '）', false);
+  } finally {
+    retrying = false;
+  }
+}
 
 // 一些便于组件使用的小工具
 export function useCurrentPosition(): Position {
@@ -2641,7 +2839,52 @@ function viewSizeOf(el: HTMLElement): { width: number; height: number } | null {
  */
 let polling = false;
 let forwarding = false;
+/** 这一拍什么时候开始的。看门狗靠它认出"卡住不动的那一拍"。 */
+let pollingSince = 0;
 let lastForwardAt = 0;
+/** 正在办"没核实的那一手"。同一时间只办一手，别两处一起往那边点。 */
+let retrying = false;
+
+/**
+ * 点出去但没能核实的那一手。
+ *
+ * 点完要等那边画出来才知道这一下落上没有，而"没等到"其实分三种：那一下真没点进去、
+ * 点进去了但画得慢、那边早就不是这一手了。从前一律报一句"还没画出来"就完了，于是
+ * 两边从此差着一手：实时截取每拍比对都报"本地多一颗"，再也接不上。
+ * 所以把那一手记下来，下一拍接着看两边的棋盘：一致就重点一次，不一致就按那边重新对。
+ */
+interface PendingForward {
+  /** 哪一盘（棋盘标签的 id）。 */
+  boardId: string;
+  /** 这一手接在哪个节点后面（点之前那边该是这个局面）。 */
+  parentId: number;
+  /** 点下去时那个节点的局面指纹：用户悔棋、摆子、改了谱面就作废。 */
+  parentKey: string;
+  point: number;
+  color: 1 | 2;
+  size: number;
+  /** 已经点了几次（含最初那一下）。 */
+  tries: number;
+  /** 第一次点出去的时刻：试够时间还没落上就不再点。 */
+  firstAt: number;
+}
+let pending: PendingForward | null = null;
+
+/**
+ * 已经放弃重试的那一手（点了几次那边都没有）。
+ *
+ * 光有它不影响任何动作，只为一件事：实时截取下一拍会比出"本地多一颗"，有这条记录
+ * 就能把那句"对不上"说成人话（多的正是这一手，怎么办也说得出来），而不是让用户
+ * 对着一个反复出现的"先不动"发呆。
+ */
+let unlanded: { boardId: string; point: number; color: 1 | 2; size: number; tries: number } | null = null;
+
+/** 一手最多点几次。那边卡住的时候点十几次没有意义，还把用户晾在那儿等。 */
+const MAX_FORWARD_TRIES = 3;
+/** 试多久还没落上就不再点（毫秒）。次数与时间哪一样先到就停。 */
+const FORWARD_RETRY_MS = 30000;
+/** 一拍超过这么久还没回来，就当它卡死了：截图接口偶尔会把 Promise 挂着不还。 */
+const POLL_STUCK_MS = 15000;
 
 /**
  * 上一次认出来的棋盘框，下次截图先照着它裁。网页四周的聊天栏、比分、按钮都在变，
@@ -2739,6 +2982,12 @@ async function shotPage(): Promise<PageShot | string> {
   if (!view) return '内置浏览器里还没有页面';
   const viewSize = viewSizeOf(view.el);
   if (!viewSize) return '浏览器那块还没显示出来';
+  /*
+   * 程序自己的窗口最小化（或者收起来）的时候，截图接口会一直挂着不返回：
+   * 从前每拍都要干等它 6 秒的超时，实时截取看着就像卡住了。这里当场说清楚，
+   * 窗口恢复出来下一拍自己接着看。
+   */
+  if (document.hidden) return '程序窗口被最小化了，没有画面（恢复出来就接着看）';
   let dataUrl: string | null = null;
   try {
     dataUrl = await withTimeout(window.api.browser.capture(view.id), 6000, '截网页没在 6 秒内返回，大概是窗口被最小化了');
