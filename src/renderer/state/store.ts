@@ -45,9 +45,24 @@ import {
   type ReviewPoint,
   type ReviewSummary
 } from '../core/review/review';
-import { cloneTree } from '../core/sgf/serialize';
+import { cloneTree, serializeSgf } from '../core/sgf/serialize';
 import { engineSgfFor } from '../core/sgf/engineSgf';
 import { parseSgf } from '../core/sgf/parse';
+import {
+  DEFAULT_GAME,
+  boardTitle,
+  closeBoard,
+  copiedBoard,
+  freshBoard,
+  nthBoard,
+  openBoard,
+  sliceFrom,
+  stepBoard,
+  type BoardSlice,
+  type BoardTab,
+  type GameConfig
+} from '../core/boards/boards';
+import { fromSession, toSession } from '../core/boards/session';
 import { Position } from '../core/go/position';
 import { closeTab, makeTab, openTab, stepTab, type BrowserTab } from '../core/browser/tabs';
 import { expectStone, isPassPoint, planMirror, pointToPage } from '../core/browser/mirror';
@@ -84,16 +99,13 @@ export type DialogName =
   | 'shortcuts'
   | 'newgame'
   | 'review'
+  | 'closetab'
   | null;
 
-export interface GameConfig {
-  mode: 'manual' | 'vs-ai' | 'ai-vs-ai';
-  humanColor: Stone;
-  visits: number;
-  timeMs: number;
-  temperature: number;
-  allowResign: boolean;
-}
+/**
+ * 对局设置就那么几项，定义在 core/boards 里（它跟着一盘棋走），这里转出去给组件用。
+ */
+export type { GameConfig };
 
 export interface Toast {
   text: string;
@@ -114,6 +126,18 @@ interface AppStore {
   filePath: string | null;
   dirty: boolean;
 
+  /**
+   * 打开着的几盘棋，像浏览器的标签页。顺序就是标签条上的顺序。
+   *
+   * 当前那一盘摊在 store 顶层（tree、current、analysis… 这些字段），其余的存在各自
+   * 的 slice 里：那几十个动作全是照着顶层字段写的，切标签时换进换出，动作和组件
+   * 就都不用改。哪一块属于一盘棋，只由 core/boards 里的 BOARD_KEYS 说了算。
+   */
+  boards: BoardTab[];
+  activeBoard: string;
+  /** 刚关掉的那几个标签，Ctrl+Shift+T 按顺序开回来，最多留十个。 */
+  closedBoards: BoardTab[];
+
   tool: Tool;
   hover: number | null;
   cursor: number | null;
@@ -125,7 +149,11 @@ interface AppStore {
   analyzing: boolean;
   /** 分析引擎正在起步（拉起进程、换网络都要十几秒）。界面靠它显示"启动中"。 */
   analyzeStarting: boolean;
-  thinking: boolean;
+  /**
+   * 对局引擎正为哪一盘算棋。不止一盘时"引擎在想"这句话得说清是想哪一盘，
+   * 界面上只有它算的那一盘才转圈。
+   */
+  thinkingBoard: string | null;
   /** 手里这条推荐，带颜色。盘面一变就作废，不会留在旧局面的点上。 */
   hint: Advice | null;
   engineLogs: string[];
@@ -195,15 +223,16 @@ interface AppStore {
   play: (point: number) => void;
   playColor: (color: 1 | 2, point: number, from?: 'local' | 'remote') => void;
   pass: () => void;
-  playAiMove: (force?: boolean) => Promise<string | null>;
-  maybeAiTurn: () => Promise<void>;
+  /** board 缺省是当前那盘；后台跑着机机的那盘会带自己的编号进来。 */
+  playAiMove: (force?: boolean, board?: string) => Promise<string | null>;
+  maybeAiTurn: (board?: string) => Promise<void>;
   /**
    * 机机对局随时开、随时停：开了双方都由 AI 自动走，从当前局面接着下，
    * 停了就回到开之前那一档。生成棋谱来复盘，或者想看引擎自己怎么下，用它。
    */
   toggleAiVsAi: () => void;
   /** 关掉机机对局并回到原来那一档。reason 是给提示用的说法，"下完了"不再多说一句。 */
-  stopAiVsAi: (reason: '已停' | '下完了') => void;
+  stopAiVsAi: (reason: '已停' | '下完了', board?: string) => void;
   /** 让引擎按当前行棋方走一手，走完就停，不接着自动走。 */
   aiMoveNow: () => Promise<void>;
   doHint: () => Promise<void>;
@@ -232,7 +261,35 @@ interface AppStore {
   stopAnalysis: () => Promise<void>;
   toggleAnalysis: () => Promise<void>;
   setAnalysis: (s: AnalysisSnapshot | null) => void;
-  setThinking: (v: boolean) => void;
+  /** 引擎送来一份快照，按盘落到它该去的那一盘上；不是当前盘就只存进它的切片。 */
+  applySnapshot: (board: string, s: AnalysisSnapshot) => void;
+  /** 某一盘的分析被别的盘顶掉了：把那盘的状态收干净。 */
+  analysisReplaced: (board: string) => void;
+  setThinking: (v: boolean, board?: string) => void;
+
+  /** 某个标签上开着的一盘棋。当前那盘就是顶层那份。 */
+  boardSliceOf: (id: string) => BoardSlice | null;
+  /** 往某一盘上写几个字段。当前盘写顶层，后台盘写进它的切片。 */
+  patchBoard: (id: string, patch: Partial<BoardSlice>) => void;
+  /** 开一个空的棋盘标签，返回它的编号。 */
+  openBoardTab: (opts?: { activate?: boolean; note?: string }) => string;
+  /** 把当前这一盘整棵复制到新标签里，用来互相对照着研究。 */
+  duplicateBoard: () => string;
+  activateBoard: (id: string) => void;
+  /** 关一个标签。这一盘有改动没保存时先问一句（force 是真的关，确认走完才用）。 */
+  closeBoardTab: (id: string, force?: boolean) => void;
+  closeOtherBoards: (force?: boolean) => void;
+  closeAllBoards: (force?: boolean) => void;
+  /** 关闭前的确认：要关的是哪几个标签、是关一个还是关一片。 */
+  pendingClose: { ids: string[]; scope: 'one' | 'others' | 'all' } | null;
+  confirmClose: (mode: 'save' | 'discard') => Promise<void>;
+  cancelClose: () => void;
+  stepBoardTab: (dir: 1 | -1) => void;
+  nthBoardTab: (n: number) => void;
+  /** 把刚关掉的那一盘开回来。 */
+  reopenBoard: () => void;
+  /** 这一盘是不是全新空盘（可以就地装新开的棋，不必再开标签）。 */
+  activeIsEmpty: () => boolean;
   setEngineStatus: (s: EngineStatus) => void;
   pushLog: (t: string) => void;
   setDialog: (d: DialogName) => void;
@@ -264,9 +321,9 @@ interface AppStore {
   /** 复盘：把整局（主线）逐手算一遍。已经算过的那一段会跳过，接着算剩下的。 */
   startReview: () => Promise<void>;
   stopReview: () => Promise<void>;
-  /** 主进程算完一个局面，结果记进来。 */
-  addReviewPoint: (p: ReviewPoint) => void;
-  endReview: (reason: 'done' | 'cancelled' | 'replaced' | 'error', error?: string) => void;
+  /** 主进程算完一个局面，结果记进来（可能是后台那一盘的）。 */
+  addReviewPoint: (p: ReviewPoint, board?: string) => void;
+  endReview: (reason: 'done' | 'cancelled' | 'replaced' | 'error', error?: string, board?: string) => void;
   /** 清掉复盘结果。新开一局、导入棋谱、换访问量时调。 */
   clearReview: () => void;
   /** 跳到下一处（dir 为 1）或上一处（-1）问题手。 */
@@ -339,6 +396,30 @@ function positionSign(tree: GameTree, id: number): string {
   return mv ? `${mv.color}:${mv.point}` : 'pos:' + positionKey(tree, id);
 }
 
+/**
+ * 换一棵新棋谱要写的那几项。commit 的动作和"后台那一盘自己落子"共用它。
+ *
+ * 盘面变了（落了子、摆了子、提了子）推荐就作废；只改注释标记时留着，那条推荐
+ * 还是这个局面的。棋谱变了，复盘评点得跟着重算：多了一手就可能多出一处问题手，
+ * 在分支里拐弯也会让"后面那一手"变成另一手（原始结果按节点存着，重算的只是整理这一步）。
+ */
+function commitPatch(slice: BoardSlice, tree: GameTree, current?: number): Partial<BoardSlice> {
+  const cur = slice.current;
+  const nextCurrent = current ?? (tree.nodes[cur] ? cur : tree.root);
+  const sameBoard = slice.hint !== null && positionKey(tree, nextCurrent) === positionKey(slice.tree, cur);
+  const derived =
+    Object.keys(slice.reviewPoints).length > 0 ? deriveReview(tree, slice.reviewPoints, slice.reviewSign) : null;
+  return {
+    tree,
+    current: nextCurrent,
+    past: [...slice.past.slice(-120), slice.tree],
+    future: [],
+    dirty: true,
+    hint: sameBoard ? slice.hint : null,
+    ...(derived ? { reviewMoves: derived.moves, reviewSummary: derived.summary } : {})
+  };
+}
+
 function clampRange(v: number, lo: number, hi: number): number {
   if (!Number.isFinite(v)) return lo;
   return Math.max(lo, Math.min(hi, v));
@@ -349,6 +430,35 @@ function clampRange(v: number, lo: number, hi: number): number {
  * "这次回话还算不算数"，见 startAnalysis 与 stopAnalysis。
  */
 let analyzeRun = 0;
+
+/** 一盘棋作用域的字段打哪几个地方看。换进换出、按盘改都走它。 */
+function sliceOf(st: AppStore, id: string): BoardSlice | null {
+  if (id === st.activeBoard) return sliceFrom(st);
+  return st.boards.find((t) => t.id === id)?.slice ?? null;
+}
+
+/**
+ * 换标签要写的那几项：把当前这盘收进 boards，把目标那盘摊到顶层。
+ *
+ * 只在切标签、开关标签时用，而且换出去的那盘必须写回 boards 里存住：
+ * 当前盘的改动平时是写在顶层的，切走的时候不收回切片，它就跟着顶层字段
+ * 被下一盘继承了。
+ */
+function activatePartial(st: AppStore, boards: BoardTab[], id: string): Partial<AppStore> | null {
+  const stash = sliceFrom(st);
+  const list = boards.map((t) => (t.id === st.activeBoard ? { ...t, slice: stash } : t));
+  const target = list.find((t) => t.id === id);
+  if (!target) return null;
+  return { boards: list, activeBoard: id, ...sliceFrom(target.slice) };
+}
+
+/** 切换标签时该跟着关掉的对话框：里面显示的都是一盘棋的事。 */
+const BOARD_DIALOGS: DialogName[] = ['newgame', 'image', 'library', 'score', 'gameinfo', 'review'];
+
+/** 刚关掉的标签记着，好开回来。留着超过十个就丢掉最早那个。 */
+function rememberClosed(list: BoardTab[], tab: BoardTab): BoardTab[] {
+  return [tab, ...list].slice(0, 10);
+}
 
 /**
  * 拖分隔条时每一帧都写盘太凶，攒一会儿再写。
@@ -378,35 +488,62 @@ function persistLayout(s: {
   }, 400);
 }
 
+/** 起手那一盘。会话文件里读得回来就换成会话那几盘，见 boot()。 */
+const firstTab = freshBoard();
+
+/**
+ * 会话没读回来之前不写盘：boot() 里那几下 set 会把上次的几盘棋覆盖成空的。
+ */
+let sessionReady = false;
+let sessionTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * 把现在这几盘写进会话文件，关掉程序下次还在这。
+ *
+ * 只存棋谱本身（局面、看到哪一手、文件路径、对局设置），分析结论和复盘结果不存：
+ * 那些是动手才算的东西，重开程序不该自己去占显卡。
+ */
+async function writeSession(): Promise<void> {
+  const st = useStore.getState();
+  if (!sessionReady || st.boards.length === 0) return;
+  try {
+    await window.api.session.set(toSession(st.boards, st.activeBoard));
+  } catch {
+    // 存不上不影响下棋，下一次改动还会再试一遍
+  }
+}
+
+/** 改动攒一会儿再写：落一手、翻一页都写盘太凶。 */
+function writeSessionSoon(): void {
+  if (!sessionReady) return;
+  if (sessionTimer) clearTimeout(sessionTimer);
+  sessionTimer = setTimeout(() => {
+    sessionTimer = null;
+    void writeSession();
+  }, 600);
+}
+
 export const useStore = create<AppStore>((set, get) => ({
   ready: false,
   settings: { ...DEFAULT_SETTINGS },
   info: null,
   theme: 'dark',
 
-  tree: createTree(19, 7.5),
-  current: 1,
-  past: [],
-  future: [],
-  filePath: null,
-  dirty: false,
+  // 一盘棋的全部状态都从切片里摊开，见 AppStore 里 boards 的说明
+  ...sliceFrom(firstTab.slice),
+  boards: [firstTab],
+  activeBoard: firstTab.id,
+  closedBoards: [],
+  pendingClose: null,
 
   tool: 'play',
   hover: null,
   cursor: null,
 
   engineStatus: emptyStatus,
-  analysis: null,
-  analyzing: false,
   analyzeStarting: false,
-  thinking: false,
-  hint: null,
+  thinkingBoard: null,
   engineLogs: [],
-
-  game: { mode: 'manual', humanColor: BLACK, visits: 400, timeMs: 3000, temperature: 0, allowResign: true },
-  autoReturn: 'manual',
-  finished: null,
-  deadStones: [],
 
   dialog: null,
   image: null,
@@ -422,15 +559,6 @@ export const useStore = create<AppStore>((set, get) => ({
   showOwnership: false,
   toasts: [],
   sync: null,
-  reviewPoints: {},
-  reviewSign: {},
-  reviewMoves: [],
-  reviewSummary: { moves: 0, best: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0, worst: null, totalLoss: 0 },
-  reviewRunning: false,
-  reviewDone: 0,
-  reviewTotal: 0,
-  reviewStopped: null,
-  reviewError: null,
 
   async boot() {
     const [settings, info] = await Promise.all([window.api.settings.get(), window.api.app.info()]);
@@ -462,6 +590,21 @@ export const useStore = create<AppStore>((set, get) => ({
       engineStatus: st ?? get().engineStatus,
       game: { ...get().game, visits: settings.playVisits, timeMs: settings.playTimeMs }
     });
+    /*
+     * 把上次那几盘棋读回来。读不出来就照常开一盘空的：会话文件坏了、版本不对
+     * （换过存法），都不该让人打不开程序。
+     */
+    const saved = await window.api.session.get().catch(() => null);
+    const restored = fromSession(saved);
+    if (restored) {
+      const first = restored.tabs.find((t) => t.id === restored.activeId) ?? restored.tabs[0];
+      set({ boards: restored.tabs, activeBoard: first.id, ...sliceFrom(first.slice) });
+    } else {
+      const tab = get().boards[0] ?? freshBoard();
+      const game = { ...tab.slice.game, visits: settings.playVisits, timeMs: settings.playTimeMs };
+      set({ boards: [{ ...tab, slice: { ...tab.slice, game } }], activeBoard: tab.id, game });
+    }
+    sessionReady = true;
     if (layout.browserOpen) {
       const first = get().tabs[0];
       if (first) set({ activeTabId: first.id });
@@ -505,6 +648,197 @@ export const useStore = create<AppStore>((set, get) => ({
     set({ info });
   },
 
+  boardSliceOf(id) {
+    return sliceOf(get(), id);
+  },
+
+  /**
+   * 往某一盘上写几个字段。
+   *
+   * 当前那盘就写顶层（等于所有动作照旧），后台那盘写进它的切片：这一条是"多盘"的
+   * 关键，引擎送回来的东西、后台机机自己落的子，都靠它落到对的那盘上。
+   */
+  patchBoard(id, patch) {
+    const st = get();
+    if (id === st.activeBoard || !st.boards.some((t) => t.id === id)) {
+      // 认不出的编号（比如引擎报了个早就不在的盘）就当成当前盘，不要凭空造一盘出来
+      set(patch);
+      writeSessionSoon();
+      return;
+    }
+    set({ boards: st.boards.map((t) => (t.id === id ? { ...t, slice: { ...t.slice, ...patch } } : t)) });
+    writeSessionSoon();
+  },
+
+  openBoardTab(opts) {
+    const activate = opts?.activate ?? true;
+    const settings = get().settings;
+    const tab = freshBoard({
+      game: { ...DEFAULT_GAME, visits: settings.playVisits, timeMs: settings.playTimeMs }
+    });
+    if (opts?.note) tab.note = opts.note;
+    const next = activate ? activatePartial(get(), [...get().boards, tab], tab.id) : null;
+    if (next) set({ ...next, dialog: null });
+    else set({ boards: [...get().boards, tab] });
+    writeSessionSoon();
+    return tab.id;
+  },
+
+  duplicateBoard() {
+    const st = get();
+    const src = sliceOf(st, st.activeBoard);
+    if (!src) return '';
+    const copy = copiedBoard(src);
+    const next = activatePartial(get(), [...get().boards, copy], copy.id);
+    if (next) set({ ...next, dialog: null });
+    else set({ boards: [...get().boards, copy] });
+    get().toast('已复制一份到新标签：两边互不影响，改哪边都不动另一边', 'success');
+    writeSessionSoon();
+    return copy.id;
+  },
+
+  activateBoard(id) {
+    if (id === get().activeBoard) return;
+    const next = activatePartial(get(), get().boards, id);
+    if (!next) return;
+    // 对话框里显示的都是一盘棋的事，换盘就关掉，免得对着 A 盘的面板改 B 盘
+    const dialog = get().dialog;
+    set({ ...next, dialog: dialog && BOARD_DIALOGS.includes(dialog) ? null : dialog });
+    writeSessionSoon();
+  },
+
+  closeBoardTab(id, force = false) {
+    const st = get();
+    if (st.boards.length <= 1) {
+      get().toast('留一盘在手上：关掉最后一盘之前，先新建一盘', 'info');
+      return;
+    }
+    const tab = st.boards.find((t) => t.id === id);
+    if (!tab) return;
+    // 当前那盘的改动写在顶层，切片里那份可能是换出去时留下的旧值
+    if (!force && (id === st.activeBoard ? st.dirty : tab.slice.dirty)) {
+      set({ pendingClose: { ids: [id], scope: 'one' }, dialog: 'closetab' });
+      return;
+    }
+    /*
+     * 关掉的正是当前那盘时，它的改动还在顶层，得先收进切片再关：
+     * 收下来既是为了重开（Ctrl+Shift+T），也是为了让下一个标签拿到干净的状态。
+     */
+    const kept = { ...tab, slice: id === st.activeBoard ? sliceFrom(st) : tab.slice };
+    const close = closeBoard(st.boards, id, st.activeBoard);
+    const swap = activatePartial(st, close.tabs, close.activeId);
+    if (swap) set({ ...swap, dialog: null });
+    else set({ boards: close.tabs, activeBoard: close.activeId });
+    set({ closedBoards: rememberClosed(get().closedBoards, kept) });
+    writeSessionSoon();
+  },
+
+  closeOtherBoards(force = false) {
+    const st = get();
+    if (st.boards.length <= 1) return;
+    const others = st.boards.filter((t) => t.id !== st.activeBoard);
+    const dirty = others.filter((t) => t.slice.dirty);
+    if (!force && (dirty.length > 0 || st.dirty)) {
+      set({ pendingClose: { ids: others.map((t) => t.id), scope: 'others' }, dialog: 'closetab' });
+      return;
+    }
+    const stash = sliceFrom(st);
+    const kept = st.boards.map((t) => (t.id === st.activeBoard ? { ...t, slice: stash } : t));
+    const mine = kept.find((t) => t.id === st.activeBoard);
+    if (!mine) return;
+    set({
+      boards: [mine],
+      closedBoards: others.reduce((acc, t) => rememberClosed(acc, t), get().closedBoards),
+      dialog: null
+    });
+    get().toast(`关掉了另外 ${others.length} 盘，当前这盘留着`, 'info');
+    writeSessionSoon();
+  },
+
+  closeAllBoards(force = false) {
+    const st = get();
+    const dirty = st.boards.filter((t) => (t.id === st.activeBoard ? st.dirty : t.slice.dirty));
+    if (!force && dirty.length > 0) {
+      set({ pendingClose: { ids: dirty.map((t) => t.id), scope: 'all' }, dialog: 'closetab' });
+      return;
+    }
+    /*
+     * 全都关掉在棋盘上没有意义（总得有一盘），所以先把旧的都收起来，再开一盘干净的。
+     * 会话也跟着清掉，下次打开是一块空棋盘。
+     */
+    const stash = sliceFrom(st);
+    const kept = st.boards.map((t) => (t.id === st.activeBoard ? { ...t, slice: stash } : t));
+    const tab = freshBoard({
+      game: { ...DEFAULT_GAME, visits: st.settings.playVisits, timeMs: st.settings.playTimeMs }
+    });
+    set({
+      boards: [tab],
+      activeBoard: tab.id,
+      closedBoards: kept.reduce((acc, t) => rememberClosed(acc, t), get().closedBoards),
+      dialog: null,
+      ...sliceFrom(tab.slice)
+    });
+    writeSessionSoon();
+  },
+
+  async confirmClose(mode) {
+    const p = get().pendingClose;
+    if (!p) return;
+    if (mode === 'save' && p.scope === 'one') {
+      const id = p.ids[0];
+      const slice = sliceOf(get(), id);
+      if (!slice) return;
+      const info = infoFromTree(slice.tree);
+      const name = `${info.blackName || '黑'}对${info.whiteName || '白'}.sgf`;
+      const saved = await window.api.files.saveSgf(slice.filePath ?? name, serializeSgf(slice.tree));
+      // 存盘对话框被取消了：别顺手把这一盘关掉，让用户自己再选一次
+      if (!saved) return;
+      get().patchBoard(id, { filePath: saved, dirty: false });
+      get().toast('已保存到 ' + saved, 'success');
+    }
+    set({ pendingClose: null, dialog: null });
+    if (p.scope === 'one') get().closeBoardTab(p.ids[0], true);
+    else if (p.scope === 'others') get().closeOtherBoards(true);
+    else get().closeAllBoards(true);
+  },
+
+  cancelClose() {
+    set({ pendingClose: null, dialog: null });
+  },
+
+  stepBoardTab(dir) {
+    get().activateBoard(stepBoard(get().boards, get().activeBoard, dir));
+  },
+
+  nthBoardTab(n) {
+    const id = nthBoard(get().boards, n);
+    if (id) get().activateBoard(id);
+  },
+
+  reopenBoard() {
+    const st = get();
+    const tab = st.closedBoards[0];
+    if (!tab) {
+      get().toast('没有刚关掉的棋盘可以开回来', 'info');
+      return;
+    }
+    const next = openBoard(get().boards, tab, st.activeBoard, true);
+    const swap = activatePartial(st, next.tabs, tab.id);
+    set({
+      ...(swap ?? { boards: next.tabs, activeBoard: tab.id }),
+      closedBoards: st.closedBoards.slice(1),
+      dialog: null
+    });
+    writeSessionSoon();
+  },
+
+  activeIsEmpty() {
+    const st = get();
+    const slice = sliceOf(st, st.activeBoard);
+    if (!slice) return false;
+    return !slice.dirty && slice.filePath === null && Object.keys(slice.tree.nodes).length === 1 && slice.current === slice.tree.root;
+  },
+
   toast(text, kind = 'info') {
     const id = Date.now() + Math.random();
     set({ toasts: [...get().toasts, { text, kind, id }] });
@@ -516,26 +850,7 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   commit(tree, current) {
-    const prev = get();
-    const cur = prev.current;
-    const nextCurrent = current ?? (tree.nodes[cur] ? cur : tree.root);
-    // 盘面变了（落了子、摆了子、提了子）推荐就作废；只改注释标记时留着，
-    // 那条推荐还是这个局面的。
-    const sameBoard = prev.hint !== null && positionKey(tree, nextCurrent) === positionKey(prev.tree, cur);
-    /*
-     * 棋谱变了，复盘评点得跟着重算：多了一手就可能多出一处问题手，
-     * 在分支里拐弯也会让"后面那一手"变成另一手。原始结果按节点存着，重算的只是整理这一步。
-     */
-    const derived = Object.keys(prev.reviewPoints).length > 0 ? deriveReview(tree, prev.reviewPoints, prev.reviewSign) : null;
-    set({
-      tree,
-      current: nextCurrent,
-      past: [...get().past.slice(-120), get().tree],
-      future: [],
-      dirty: true,
-      hint: sameBoard ? prev.hint : null,
-      ...(derived ? { reviewMoves: derived.moves, reviewSummary: derived.summary } : {})
-    });
+    set(commitPatch(sliceFrom(get()), tree, current));
   },
 
   undo() {
@@ -688,16 +1003,30 @@ export const useStore = create<AppStore>((set, get) => ({
     }
   },
 
-  async playAiMove(force = false): Promise<string | null> {
-    const { tree, current, game, finished } = get();
-    if (finished || get().thinking) return null;
+  /**
+   * 让引擎按某一盘的行棋方走一手。默认是当前那盘，后台跑着的机机也会传自己那一盘进来，
+   * 这样切到别的盘上看着的时候它照样走，落下的子回它自己的棋谱。
+   */
+  async playAiMove(force = false, board = ''): Promise<string | null> {
+    const st = get();
+    const id = board || st.activeBoard;
+    const slice = sliceOf(st, id);
+    if (!slice) return null;
+    const { tree, current, game, finished } = slice;
+    if (finished || get().thinkingBoard === id) return null;
+    const busy = get().thinkingBoard;
+    if (busy && busy !== id) {
+      get().toast('引擎正为另一盘算棋，等它算完这一手再说', 'info');
+      return null;
+    }
     const color = colorToPlayAt(tree, current);
     const aiColor = (3 - game.humanColor) as 1 | 2;
     if (!force && color !== aiColor && game.mode !== 'ai-vs-ai') return null;
     const nodeAtRequest = current;
-    get().setThinking(true);
+    get().setThinking(true, id);
     try {
       const res = await window.api.engine.genMove({
+        board: id,
         sgf: sgfFor(tree, current),
         color: color === BLACK ? 'B' : 'W',
         maxVisits: game.visits,
@@ -705,40 +1034,42 @@ export const useStore = create<AppStore>((set, get) => ({
         allowResign: game.allowResign,
         temperature: game.temperature
       });
-      if (get().current !== nodeAtRequest) return null; // 用户已经切换了节点
+      // 算这一手的工夫里，这一盘可能已经被改过（自己又落了一手）、或者翻到别的局面去了
+      const now = sliceOf(get(), id);
+      if (!now || now.current !== nodeAtRequest || now.tree !== tree) return null;
       if (res.error) {
         get().toast('引擎出错：' + res.error, 'error');
         return null;
       }
       if (res.resigned) {
         const winner = color === BLACK ? '白' : '黑';
-        get().setFinished(`白胜` === winner + '胜' ? winner + '胜（认输）' : `${winner}中盘胜`);
-        const t = get().tree;
-        get().commit(setProp(t, t.root, 'RE', [`${winner === '黑' ? 'B' : 'W'}+R`]), get().current);
+        const t = now.tree;
+        const withRe = setProp(t, t.root, 'RE', [`${winner === '黑' ? 'B' : 'W'}+R`]);
+        get().patchBoard(id, { ...commitPatch(now, withRe, now.current), finished: `${winner}中盘胜` });
         get().toast(`${color === BLACK ? '黑方' : '白方'}认输，${winner}中盘胜`, 'success');
         // 这盘到此为止，机机档就没必要再亮着了（认输的提示刚说过，不用再说一遍）
-        if (get().game.mode === 'ai-vs-ai') get().stopAiVsAi('下完了');
+        if (now.game.mode === 'ai-vs-ai') get().stopAiVsAi('下完了', id);
         return null;
       }
       const size = propNum(tree, tree.root, 'SZ', 19);
       const point = Position.parseVertex(res.move, size);
-      const r2 = addMoveNode(get().tree, get().current, color, point, { mainLine: true, source: 'ai' });
-      get().commit(r2.tree, r2.id);
-      void get().forwardMoveToBrowser(point, color, nodeAtRequest);
+      const r2 = addMoveNode(now.tree, now.current, color, point, { mainLine: true, source: 'ai' });
+      get().patchBoard(id, commitPatch(now, r2.tree, r2.id));
+      if (id === get().activeBoard) void get().forwardMoveToBrowser(point, color, nodeAtRequest);
       // 引擎替人停的那一手也算：两边连续停一手就是对局到头，接着自动走会一直停下去
       if (endedByDoublePass(r2.tree, r2.id)) {
-        if (get().game.mode === 'ai-vs-ai') get().stopAiVsAi('下完了');
+        if (now.game.mode === 'ai-vs-ai') get().stopAiVsAi('下完了', id);
         get().toast('双方连续停一手，这一局下完了，打开形势判断看看结果', 'success');
-        get().setDialog('score');
+        if (id === get().activeBoard) get().setDialog('score');
         return res.move;
       }
-      if (get().game.mode === 'ai-vs-ai') setTimeout(() => void get().maybeAiTurn(), 400);
+      if (now.game.mode === 'ai-vs-ai') setTimeout(() => void get().maybeAiTurn(id), 400);
       return res.move;
     } catch (e) {
       get().toast('引擎出错：' + (e instanceof Error ? e.message : String(e)), 'error');
       return null;
     } finally {
-      get().setThinking(false);
+      get().setThinking(false, id);
     }
   },
 
@@ -750,7 +1081,7 @@ export const useStore = create<AppStore>((set, get) => ({
     }
     const { tree, current } = get();
     const color = colorToPlayAt(tree, current);
-    if (get().thinking) return;
+    if (get().thinkingBoard === get().activeBoard) return;
     set({ hint: null });
     const move = await get().playAiMove(true);
     if (move !== null) {
@@ -759,7 +1090,10 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   toggleAiVsAi() {
-    const { game, finished, tree, current } = get();
+    const board = get().activeBoard;
+    const slice = sliceOf(get(), board);
+    if (!slice) return;
+    const { game, finished, tree, current } = slice;
     if (game.mode === 'ai-vs-ai') {
       get().stopAiVsAi('已停');
       return;
@@ -773,20 +1107,24 @@ export const useStore = create<AppStore>((set, get) => ({
       get().toast('这一局已经下完了（双方都停了手），要再下就新建一盘或者接着摆', 'info');
       return;
     }
-    set({ game: { ...game, mode: 'ai-vs-ai' }, autoReturn: game.mode, hint: null });
+    get().patchBoard(board, { game: { ...game, mode: 'ai-vs-ai' }, autoReturn: game.mode, hint: null });
     get().toast(
-      get().reviewRunning
+      slice.reviewRunning
         ? '机机对局：轮到谁谁自动走，再点一下"停机机"就停。复盘正在算，两个引擎抢显卡，都会慢一些'
-        : '机机对局：轮到谁谁自动走，再点一下"停机机"就停',
+        : '机机对局：轮到谁谁自动走，再点一下"停机机"就停。切到别的棋盘它就转后台接着走',
       'info'
     );
-    void get().maybeAiTurn();
+    void get().maybeAiTurn(board);
   },
 
-  stopAiVsAi(reason) {
-    const { game, autoReturn, thinking } = get();
-    if (game.mode !== 'ai-vs-ai') return;
-    set({ game: { ...game, mode: autoReturn } });
+  stopAiVsAi(reason, board = '') {
+    const id = board || get().activeBoard;
+    const slice = sliceOf(get(), id);
+    if (!slice || slice.game.mode !== 'ai-vs-ai') return;
+    const { game, autoReturn } = slice;
+    // 正在算的那一手是这一盘自己的才算数：别的盘在算跟这句提示没关系
+    const thinking = get().thinkingBoard === id;
+    get().patchBoard(id, { game: { ...game, mode: autoReturn } });
     if (reason === '下完了') return; // 终局、认输那两条提示自己会交代，别刷两条
     /*
      * 正算着的这一手没法半路收回（引擎是按局面问一次算一次），会照常落下，
@@ -799,27 +1137,44 @@ export const useStore = create<AppStore>((set, get) => ({
     );
   },
 
-  async maybeAiTurn() {
-    const { game, tree, current, finished, thinking } = get();
+  /**
+   * 轮到 AI 的时候让它走一手。默认管当前那盘，后台跑着机机的那盘会带自己的编号进来，
+   * 这样它切走之后接着走，落的子还在自己的谱上。
+   */
+  async maybeAiTurn(board = '') {
+    const st = get();
+    const id = board || st.activeBoard;
+    const slice = sliceOf(st, id);
+    if (!slice) return;
+    const { game, tree, current, finished } = slice;
     if (finished) return;
     if (game.mode === 'manual') return;
     // 两边都停过一手就是对局到头了，别再往下走
     if (endedByDoublePass(tree, current)) return;
     /*
-     * 引擎正忙（刚按过提示、上一手还没算完）时按下"机机对下"，这一按不能白按：
-     * 等它收尾再接上。等的时候模式可能已经被关掉，每次醒来都重新读一遍。
+     * 对局引擎一次只算一盘。别的盘正算着就等一等，别把两边的请求挤在一起；
+     * 等的时候模式可能已经被关掉，每次醒来都重新读一遍。
      */
-    if (thinking) {
-      setTimeout(() => void get().maybeAiTurn(), 300);
+    const busy = get().thinkingBoard;
+    if (busy !== null && busy !== id) {
+      setTimeout(() => void get().maybeAiTurn(id), 400);
+      return;
+    }
+    /*
+     * 引擎正忙（刚按过提示、上一手还没算完）时按下"机机对下"，这一按不能白按：
+     * 等它收尾再接上。
+     */
+    if (busy === id) {
+      setTimeout(() => void get().maybeAiTurn(id), 300);
       return;
     }
     if (game.mode === 'ai-vs-ai') {
-      void get().playAiMove();
+      void get().playAiMove(false, id);
       return;
     }
     const color = colorToPlayAt(tree, current);
     const aiColor = (3 - game.humanColor) as 1 | 2;
-    if (color === aiColor) void get().playAiMove();
+    if (color === aiColor) void get().playAiMove(false, id);
   },
 
   /**
@@ -827,10 +1182,17 @@ export const useStore = create<AppStore>((set, get) => ({
    * 计算期间占住 thinking，连点不会排出一串引擎请求，也不会刷出一串重复提示。
    */
   async doHint() {
-    const { tree, current, thinking } = get();
-    if (thinking) return;
+    const board = get().activeBoard;
+    const slice = sliceOf(get(), board);
+    if (!slice) return;
+    const { tree, current } = slice;
+    if (get().thinkingBoard === board) return;
+    if (get().thinkingBoard) {
+      get().toast('引擎正为另一盘算棋，等它算完这一手再说', 'info');
+      return;
+    }
     const color = colorToPlayAt(tree, current);
-    get().setThinking(true);
+    get().setThinking(true, board);
     try {
       const { settings } = get();
       const res = await window.api.engine.hint(
@@ -838,27 +1200,29 @@ export const useStore = create<AppStore>((set, get) => ({
         settings.analyzeVisits,
         color === BLACK ? 'B' : 'W',
         // 提示也要带时限：大网络上一手提示跑几十秒会让人以为卡住。用每步限时那一档。
-        settings.playTimeMs
+        settings.playTimeMs,
+        board
       );
 
-      if (get().current !== current) return; // 用户已经翻到别的局面去了
+      const now = sliceOf(get(), board);
+      if (!now || now.current !== current || now.tree !== tree) return; // 用户已经翻到别的局面、或者又落了一手
       if (res.error) {
         get().toast('引擎出错：' + res.error, 'error');
         return;
       }
       const advice: Advice = { color, move: res.move, winrate: res.winrate, scoreLead: res.scoreLead };
-      set({ hint: advice });
+      get().patchBoard(board, { hint: advice });
       get().toast(adviceLine(advice));
     } catch (e) {
       get().toast('引擎出错：' + (e instanceof Error ? e.message : String(e)), 'error');
     } finally {
-      get().setThinking(false);
+      get().setThinking(false, board);
       /*
        * 引擎算这一手之前会把实时分析停掉，给搜索腾机器（这一步是 genMove 里做的）。
        * 提示不落子，没人触发界面里那条"局面变了就重连分析"，所以要在这里把它接回去：
        * 不接的话面板还写着"分析中"，候选点却停在上一手那几个上，看的人会以为分析坏了。
        */
-      if (get().analyzing) void get().startAnalysis(true);
+      if (get().activeBoard === board && sliceOf(get(), board)?.analyzing) void get().startAnalysis(true);
     }
   },
 
@@ -907,7 +1271,12 @@ export const useStore = create<AppStore>((set, get) => ({
     const handicap = opts.handicap ?? 0;
     const tree = createTree(size, komi, handicap, opts.rules ?? 'Chinese');
     const humanColor = opts.humanColor ?? (handicap > 1 ? WHITE : BLACK);
-    set({
+    /*
+     * 新的一局开在哪个标签上：眼前还是一张没动过的空盘，就地开（不然连点两次新建
+     * 会攒出一排空标签）；已经摆着棋了，就另开一个标签，原来那盘留着。
+     */
+    const board = get().activeIsEmpty() ? get().activeBoard : get().openBoardTab();
+    get().patchBoard(board, {
       tree,
       current: tree.root,
       past: [],
@@ -915,6 +1284,7 @@ export const useStore = create<AppStore>((set, get) => ({
       filePath: null,
       dirty: false,
       analysis: null,
+      analyzing: false,
       finished: null,
       deadStones: [],
       hint: null,
@@ -922,7 +1292,7 @@ export const useStore = create<AppStore>((set, get) => ({
       autoReturn: 'manual'
     });
     get().clearReview();
-    void get().maybeAiTurn();
+    void get().maybeAiTurn(board);
   },
 
   loadSgf(content, path) {
@@ -931,7 +1301,9 @@ export const useStore = create<AppStore>((set, get) => ({
       const tree = trees[0];
       let cur = tree.root;
       while (tree.nodes[cur]?.children.length) cur = tree.nodes[cur].children[0];
-      set({
+      // 手里这盘没动过就装进它，动过就新开一个标签：打开棋谱不该把那盘棋冲掉
+      const board = get().activeIsEmpty() ? get().activeBoard : get().openBoardTab();
+      get().patchBoard(board, {
         tree,
         current: cur,
         past: [],
@@ -939,6 +1311,7 @@ export const useStore = create<AppStore>((set, get) => ({
         filePath: path ?? null,
         dirty: false,
         analysis: null,
+        analyzing: false,
         finished: null,
         deadStones: [],
         game: { ...get().game, mode: 'manual' },
@@ -967,7 +1340,9 @@ export const useStore = create<AppStore>((set, get) => ({
       const base = createTree(size, 7.5, 0, 'Chinese');
       let t = setProp(base, base.root, 'AB', ab.length ? ab : null);
       t = setProp(t, t.root, 'AW', aw.length ? aw : null);
-      set({
+      // 认出来的是新的一盘，装进空盘或者新开一个标签，别冲掉手里这盘
+      const board = get().activeIsEmpty() ? get().activeBoard : get().openBoardTab();
+      get().patchBoard(board, {
         tree: t,
         current: t.root,
         past: [],
@@ -975,6 +1350,7 @@ export const useStore = create<AppStore>((set, get) => ({
         filePath: null,
         dirty: true,
         analysis: null,
+        analyzing: false,
         finished: null,
         deadStones: [],
         game: { ...get().game, mode: 'manual' },
@@ -1166,6 +1542,11 @@ export const useStore = create<AppStore>((set, get) => ({
     if ((analyzing || get().analyzeStarting) && !force) return;
     const color = colorToPlayAt(tree, current);
     /*
+     * 记下这是给哪一盘要的分析：算出来的时候用户可能已经切到别的盘上去了，
+     * 结论要落回它自己那一盘，不能画到当前这盘上。
+     */
+    const board = get().activeBoard;
+    /*
      * 代号：每次发起、每次停下都加一。引擎那头回话晚一步的时候，只有代号还对的
      * 那一次才算数。否则会是"用户已经点暂停了，回话一到又把 analyzing 点亮"，
      * 徽章写着分析中、流却是断的。
@@ -1184,6 +1565,7 @@ export const useStore = create<AppStore>((set, get) => ({
         }
       }
       const res = await window.api.engine.analyzeStart({
+        board,
         sgf: sgfFor(tree, current),
         visits: settings.analyzeVisits,
         maxTimeMs: 0,
@@ -1202,7 +1584,7 @@ export const useStore = create<AppStore>((set, get) => ({
        * 下了一手或者翻了一手之后整块先空掉再填满，看着像卡了一下；引擎第一条
        * 结论来得很快（几十毫秒就有胜率，慢慢才准），续着显示更跟手。
        */
-      set({ analyzing: true });
+      get().patchBoard(board, { analyzing: true });
     } finally {
       if (run === analyzeRun) set({ analyzeStarting: false });
     }
@@ -1218,9 +1600,11 @@ export const useStore = create<AppStore>((set, get) => ({
      * 二、点暂停就该立刻清空，不用等引擎回话。
      * 代号加一是让还在路上的 analyzeStart 回话作废，它回来时不要再把 analyzing 点亮。
      */
+    const board = get().activeBoard;
     analyzeRun++;
-    set({ analyzing: false, analysis: null, analyzeStarting: false });
-    await window.api.engine.analyzeStop();
+    get().patchBoard(board, { analyzing: false, analysis: null });
+    set({ analyzeStarting: false });
+    await window.api.engine.analyzeStop(board);
   },
 
   async toggleAnalysis() {
@@ -1232,8 +1616,41 @@ export const useStore = create<AppStore>((set, get) => ({
     set({ analysis: s });
   },
 
+  /**
+   * 引擎送来一份快照，落到它归属的那一盘上。
+   *
+   * 这里也管着"这一份还算不算数"：分析快照带着它算的是哪个节点，跟那盘现在停的地方
+   * 对不上就丢掉（用户已经翻走了）；分析关掉了的盘，也不该再冒出结论来。
+   * nodeId 为 -1 的是对局引擎正在想棋的实时战报，那是最新的，直接收。
+   */
+  applySnapshot(board, s) {
+    const st = get();
+    const id = board || st.activeBoard;
+    const slice = sliceOf(st, id);
+    if (!slice) return;
+    if (s.nodeId >= 0) {
+      if (!slice.analyzing) return;
+      if (s.nodeId !== slice.current) return;
+    }
+    get().patchBoard(id, { analysis: s });
+  },
+
+  /** 这一盘的分析被别的盘顶掉了（分析引擎一次只服务一盘）。 */
+  analysisReplaced(board) {
+    const st = get();
+    const id = board || st.activeBoard;
+    const slice = sliceOf(st, id);
+    if (!slice || !slice.analyzing) return;
+    get().patchBoard(id, { analyzing: false, analysis: null });
+    const tab = st.boards.find((t) => t.id === id);
+    const who = tab ? boardTitle(tab) : '另一盘';
+    get().toast(`“${who}”这一盘的实时分析停下了：分析引擎被别的棋盘占住了`, 'info');
+  },
+
   async startReview() {
-    const { tree, settings, reviewPoints, reviewSign, reviewRunning } = get();
+    const st = get();
+    const board = st.activeBoard;
+    const { tree, reviewPoints, reviewSign, reviewRunning } = sliceOf(st, board) ?? sliceFrom(st);
     if (reviewRunning) return;
     /*
      * 复盘的对象是主线那一局棋，不是"当前翻到哪儿"。
@@ -1271,57 +1688,71 @@ export const useStore = create<AppStore>((set, get) => ({
       get().toast('这一局已经复盘完了', 'info');
       return;
     }
-    set({ reviewRunning: true, reviewDone: 0, reviewTotal: todo.length, reviewStopped: null, reviewError: null });
+    get().patchBoard(board, { reviewRunning: true, reviewDone: 0, reviewTotal: todo.length, reviewStopped: null, reviewError: null });
     get().toast(`开始复盘：从第 ${cover} 手之后算起，共 ${todo.length} 个局面`, 'info');
     const res = await window.api.engine.reviewStart({
+      board,
       positions: todo,
-      visits: settings.reviewVisits,
+      visits: st.settings.reviewVisits,
       maxTimeMs: 0,
       lines: 8
     });
     if (!res.ok) {
-      set({ reviewRunning: false, reviewError: res.error ?? '复盘没能开始' });
+      get().patchBoard(board, { reviewRunning: false, reviewError: res.error ?? '复盘没能开始' });
       get().toast('复盘没能开始：' + (res.error ?? ''), 'error');
     }
   },
 
   async stopReview() {
-    await window.api.engine.reviewStop();
+    const board = get().activeBoard;
+    await window.api.engine.reviewStop(board);
     // 结果不清：已经算出来的那一半照样有用
-    set({ reviewRunning: false });
+    get().patchBoard(board, { reviewRunning: false });
   },
 
-  addReviewPoint(p) {
-    const { tree, reviewPoints, reviewSign } = get();
-    const points = { ...reviewPoints, [p.nodeId]: p };
-    const signs = { ...reviewSign, [p.nodeId]: positionSign(tree, p.nodeId) };
-    const derived = deriveReview(tree, points, signs);
-    set({ reviewPoints: points, reviewSign: signs, reviewMoves: derived.moves, reviewSummary: derived.summary });
+  addReviewPoint(p, board = '') {
+    const st = get();
+    const id = board || st.activeBoard;
+    const slice = sliceOf(st, id);
+    if (!slice) return;
+    const points = { ...slice.reviewPoints, [p.nodeId]: p };
+    const signs = { ...slice.reviewSign, [p.nodeId]: positionSign(slice.tree, p.nodeId) };
+    const derived = deriveReview(slice.tree, points, signs);
+    get().patchBoard(id, { reviewPoints: points, reviewSign: signs, reviewMoves: derived.moves, reviewSummary: derived.summary });
   },
 
-  endReview(reason, error) {
-    set({ reviewRunning: false, reviewStopped: reason, reviewError: error ?? null });
-    const { reviewMoves } = get();
+  endReview(reason, error, board = '') {
+    const st = get();
+    const id = board || st.activeBoard;
+    const slice = sliceOf(st, id);
+    if (!slice) return;
+    get().patchBoard(id, { reviewRunning: false, reviewStopped: reason, reviewError: error ?? null });
+    // 后台那一盘的复盘也会报告结果，说清楚是哪一盘，别让人以为说的是眼前这盘
+    const tab = st.boards.find((t) => t.id === id);
+    const mine = id === st.activeBoard;
+    const who = mine || !tab ? '' : `“${boardTitle(tab)}”这一盘：`;
+    const { reviewMoves } = sliceOf(get(), id) ?? slice;
     if (reason === 'cancelled' || reason === 'replaced') {
       get().toast(
-        reason === 'replaced' ? '复盘被实时分析顶掉了，已经算完的部分留着' : `复盘停下了，已经算完 ${reviewMoves.length} 手`,
+        who + (reason === 'replaced' ? '复盘被实时分析顶掉了，已经算完的部分留着' : `复盘停下了，已经算完 ${reviewMoves.length} 手`),
         'info'
       );
       return;
     }
     if (reason === 'error') {
-      get().toast('复盘出错：' + (error ?? ''), 'error');
+      get().toast(who + '复盘出错：' + (error ?? ''), 'error');
       return;
     }
-    const s = get().reviewSummary;
+    const s = (sliceOf(get(), id) ?? slice).reviewSummary;
     get().toast(
-      s.worst && s.worst.loss > 0
-        ? `复盘完了：${reviewMoves.length} 手，恶手 ${s.blunder} 处、失误 ${s.mistake} 处，最大的一手是第 ${s.worst.ply} 手`
-        : `复盘完了：${reviewMoves.length} 手`,
+      who +
+        (s.worst && s.worst.loss > 0
+          ? `复盘完了：${reviewMoves.length} 手，恶手 ${s.blunder} 处、失误 ${s.mistake} 处，最大的一手是第 ${s.worst.ply} 手`
+          : `复盘完了：${reviewMoves.length} 手`),
       'success'
     );
-    // 复盘完顺手停在第一处问题手上，省得自己去找
-    const first = problemMoves(reviewMoves)[0];
+    // 复盘完顺手停在第一处问题手上，省得自己去找（跳转只对眼前这盘有意义）
+    const first = mine ? problemMoves(reviewMoves)[0] : null;
     if (first) get().goto(first.nodeId);
   },
 
@@ -1358,8 +1789,14 @@ export const useStore = create<AppStore>((set, get) => ({
     get().goto(hit.nodeId);
   },
 
-  setThinking(v) {
-    set({ thinking: v });
+  /**
+   * 引擎在想哪一盘的棋。传 board 就是替某一盘占位；放下来的时候只有还占着的那一盘
+   * 才清得掉（同一盘连着两次调用不会互相踩）。
+   */
+  setThinking(v, board = '') {
+    const id = board || get().activeBoard;
+    if (v) set({ thinkingBoard: id });
+    else if (get().thinkingBoard === id) set({ thinkingBoard: null });
   },
 
   setEngineStatus(s) {
@@ -1486,9 +1923,12 @@ export const useStore = create<AppStore>((set, get) => ({
     const st = get();
     if (!st.settings.liveCapture || !st.browserOpen || st.finished) return;
     // 引擎正在想棋、或者刚点出去一手还没落定，这两段时间里两边本来就对不齐
-    if (st.thinking || forwarding) return;
+    if (st.thinkingBoard !== null || forwarding) return;
     if (polling) return;
     if (Date.now() - lastForwardAt < 2200) return;
+    // 截图是异步的：开始这一拍时记下是哪一盘，回来发现换了盘就作废，
+    // 不然网页上那一手会接到另一盘的棋谱上
+    const board = st.activeBoard;
     polling = true;
     try {
       const shot = await shotPage();
@@ -1497,6 +1937,7 @@ export const useStore = create<AppStore>((set, get) => ({
         return;
       }
       const now = get();
+      if (now.activeBoard !== board) return;
       const size = propNum(now.tree, now.tree.root, 'SZ', 19);
       if (shot.size !== size) {
         setSync(`网页上是 ${shot.size} 路，这盘是 ${size} 路，对不上`, false);
@@ -1539,6 +1980,17 @@ export const useStore = create<AppStore>((set, get) => ({
     // 这一拍正在截就先等它截完，别把这次点击丢了
     for (let i = 0; i < 20 && (polling || forwarding); i++) await sleep(50);
     if (polling || forwarding) return false;
+    // 等这一拍的工夫里可能已经换到别的棋盘上了：那一刻的谱面和现在这盘不是一回事
+    if (get().activeBoard !== st.activeBoard) return false;
+    /*
+     * 要点的这一手是接在 parentId 后面的。那个节点的局面在这段等待里要是变过
+     * （用户摆子、撤了重下），点出去就跟网页上的棋盘对不上了，宁可不点。
+     */
+    const now = get();
+    if (!now.tree.nodes[parentId] || positionKey(now.tree, parentId) !== positionKey(st.tree, parentId)) {
+      setSync('自动落子：这一手还没点出去，谱面已经变了，跳过', false);
+      return false;
+    }
     forwarding = true;
     try {
       const size = propNum(st.tree, st.tree.root, 'SZ', 19);
@@ -1623,6 +2075,33 @@ export function useBoardSize(): number {
 export function cloneCurrentTree(): GameTree {
   return cloneTree(useStore.getState().tree);
 }
+
+/** 引擎正在想眼前这一盘的棋吗。组件里那几处"转圈/禁用"都该问它。 */
+export function useThinking(): boolean {
+  return useStore((s) => s.thinkingBoard === s.activeBoard);
+}
+
+/**
+ * 会话落盘：落子、翻谱、切标签、开新盘都会碰这几个字段，攒一会儿再写一次。
+ *
+ * 拿这几个字段当信号，而不是去比对整份会话：分析快照一秒好几次，
+ * 每次都序列化一遍棋谱太亏了。
+ */
+useStore.subscribe((s, p) => {
+  if (
+    s.boards === p.boards &&
+    s.activeBoard === p.activeBoard &&
+    s.tree === p.tree &&
+    s.current === p.current &&
+    s.filePath === p.filePath &&
+    s.dirty === p.dirty &&
+    s.finished === p.finished &&
+    s.game === p.game
+  ) {
+    return;
+  }
+  writeSessionSoon();
+});
 
 /**
  * 标签页对应的 webview 节点。浏览器面板每建一个标签注册一份，

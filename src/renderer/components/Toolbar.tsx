@@ -1,4 +1,4 @@
-import { activeWebContentsId, useStore } from '../state/store';
+import { useThinking, activeWebContentsId, useStore } from '../state/store';
 import { serializeSgf } from '../core/sgf/serialize';
 import { infoFromTree } from '../core/sgf/tree';
 
@@ -27,11 +27,13 @@ export function Toolbar(): React.ReactElement {
   const doHint = useStore((s) => s.doHint);
   const aiMoveNow = useStore((s) => s.aiMoveNow);
   const toggleAiVsAi = useStore((s) => s.toggleAiVsAi);
+  const openBoardTab = useStore((s) => s.openBoardTab);
+  const duplicateBoard = useStore((s) => s.duplicateBoard);
   const aiVsAi = useStore((s) => s.game.mode === 'ai-vs-ai');
   const toggleAnalysis = useStore((s) => s.toggleAnalysis);
   const toast = useStore((s) => s.toast);
   const analyzing = useStore((s) => s.analyzing);
-  const thinking = useStore((s) => s.thinking);
+  const thinking = useThinking();
   const browserOpen = useStore((s) => s.browserOpen);
   const past = useStore((s) => s.past.length);
   const future = useStore((s) => s.future.length);
@@ -85,6 +87,17 @@ export function Toolbar(): React.ReactElement {
       </button>
       <button className="btn" onClick={() => void save()} title="保存棋谱（Ctrl+S）">
         保存
+      </button>
+      <div className="tb-sep" />
+      <button className="btn" onClick={() => openBoardTab()} title="再开一盘：新标签里是一块空棋盘，手里这盘留着（Ctrl+T）">
+        新建标签
+      </button>
+      <button
+        className="btn"
+        onClick={() => duplicateBoard()}
+        title="复制打开：照现在这一盘再开一份（含分支与复盘结果），改哪边都不动另一边（Ctrl+Shift+D）"
+      >
+        复制打开
       </button>
       <div className="tb-sep" />
       <button

@@ -17,12 +17,12 @@ const api: Api = {
     sync: (sgf: string) => ipcRenderer.invoke(CH.engineSync, sgf),
     genMove: (req: GenMoveRequest) => ipcRenderer.invoke(CH.engineGenMove, req),
     analyzeStart: (req: AnalyzeRequest) => ipcRenderer.invoke(CH.engineAnalyzeStart, req),
-    analyzeStop: () => ipcRenderer.invoke(CH.engineAnalyzeStop),
+    analyzeStop: (board: string) => ipcRenderer.invoke(CH.engineAnalyzeStop, board),
     reviewStart: (req: ReviewRequest) => ipcRenderer.invoke(CH.engineReviewStart, req),
-    reviewStop: () => ipcRenderer.invoke(CH.engineReviewStop),
+    reviewStop: (board: string) => ipcRenderer.invoke(CH.engineReviewStop, board),
     benchmark: (modelId: string, backend: BackendName) => ipcRenderer.invoke(CH.engineBenchmark, modelId, backend),
-    hint: (sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number) =>
-      ipcRenderer.invoke(CH.engineHint, sgf, visits, color, maxTimeMs),
+    hint: (sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number, board: string) =>
+      ipcRenderer.invoke(CH.engineHint, sgf, visits, color, maxTimeMs, board),
     onEvent: (cb: (e: EngineEvent) => void) => on<EngineEvent>(CH.engineEvent, cb)
   },
   models: {
@@ -48,7 +48,11 @@ const api: Api = {
   },
   settings: {
     get: () => ipcRenderer.invoke(CH.settingsGet),
-    set: (patch: Partial<AppSettings>) => ipcRenderer.invoke(CH.settingsSet, patch)
+    set: (patch) => ipcRenderer.invoke(CH.settingsSet, patch)
+  },
+  session: {
+    get: () => ipcRenderer.invoke(CH.sessionGet),
+    set: (data: unknown) => ipcRenderer.invoke(CH.sessionSet, data)
   },
   vision: {
     recognize: (req: VisionRequest) => ipcRenderer.invoke(CH.visionChat, req)

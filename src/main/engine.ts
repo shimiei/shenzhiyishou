@@ -113,10 +113,10 @@ export class EngineManager {
     name: null
   };
   private synced = new Map<GtpEngine, string>();
-  private analysis: { turn: 'B' | 'W'; nodeId: number; stop: (() => void) | null } | null = null;
+  /** 正在跑的实时分析：算的是哪一盘、哪个节点，以及怎么停它。 */
+  private analysis: { board: string; turn: 'B' | 'W'; nodeId: number; stop: (() => void) | null } | null = null;
   /** 正在跑的复盘。它和分析共用分析引擎，所以两者互相挤。 */
-  private reviewCtl: { stop: (reason: 'cancelled' | 'replaced') => void } | null = null;
-  private tempSgf = '';
+  private reviewCtl: { board: string; stop: (reason: 'cancelled' | 'replaced') => void } | null = null;
   private settings: Partial<AppSettings> = {};
   private starting: Promise<EngineStatus> | null = null;
   /**
@@ -135,9 +135,14 @@ export class EngineManager {
     for (const engine of [this.playEngine, this.analyzeEngine]) {
       engine.on('log', (text: string) => this.emit({ type: 'log', text: `[${engine.label}] ${text}` }));
       engine.on('exit', () => {
+        /*
+         * 进程没了，之前 loadsgf 进去的那个局面也不在了，缓存要跟着作废。
+         * 以前只清了对局引擎这一份，分析引擎重启后会拿着老哈希跳过 loadsgf，
+         * 结果是新进程在空盘上分析。
+         */
+        this.synced.delete(engine);
         if (engine === this.playEngine) {
           this.status = { ...this.status, running: false, ready: false };
-          this.synced.delete(engine);
           this.pushStatus();
         }
       });
@@ -256,7 +261,6 @@ export class EngineManager {
     this.pushStatus();
     mkdirSync(logsDir(), { recursive: true });
     mkdirSync(tmpDir(), { recursive: true });
-    this.tempSgf = path.join(tmpDir(), 'position.sgf');
 
     try {
       const args = this.buildArgs(modelFile, {}, humanFile);
@@ -293,6 +297,8 @@ export class EngineManager {
   }
 
   async stop(): Promise<void> {
+    // 先把它标成"自己叫停"，进程退出去时流的报错就不会被当成故障报给界面
+    this.stopAnalysis();
     this.stopReview('cancelled');
     await this.playEngine.quit();
     await this.analyzeEngine.quit();
@@ -358,14 +364,27 @@ export class EngineManager {
     }
   }
 
+  /**
+   * 把局面写成一份临时棋谱，给引擎 loadsgf 用。
+   *
+   * 每盘一份文件，不共用：以前固定写 tmp/position.sgf，一盘正读到一半、
+   * 另一盘又写进去，引擎 load 到的是谁就说不清了。盘号只留安全字符。
+   */
+  private writeTemp(sgf: string, board: string): string {
+    const tag = board.replace(/[^A-Za-z0-9_-]/g, '_') || 'default';
+    const file = path.join(tmpDir(), `position-${tag}.sgf`);
+    writeFileSync(file, sgf, 'utf8');
+    return file;
+  }
+
   /** 把局面同步给引擎。内容没变就跳过。 */
-  async sync(sgf: string, engine: GtpEngine = this.playEngine): Promise<{ ok: boolean; error?: string }> {
+  async sync(sgf: string, board = '', engine: GtpEngine = this.playEngine): Promise<{ ok: boolean; error?: string }> {
     const h = hashText(sgf);
     if (this.synced.get(engine) === h) return { ok: true };
     try {
-      writeFileSync(this.tempSgf, sgf, 'utf8');
+      const file = this.writeTemp(sgf, board);
       this.synced.set(engine, h);
-      await engine.send(`loadsgf ${this.tempSgf}`, 60000);
+      await engine.send(`loadsgf ${file}`, 60000);
       return { ok: true };
     } catch (e) {
       this.synced.delete(engine);
@@ -375,8 +394,12 @@ export class EngineManager {
 
   async genMove(req: GenMoveRequest): Promise<GenMoveResult> {
     await this.ensurePlay();
-    this.stopAnalysis();
-    const synced = await this.sync(req.sgf);
+    /*
+     * 落子会跟实时分析抢显卡，所以照旧要打断一个分析。但只能打断"这一盘自己的"：
+     * 别的棋盘上跑着的流跟这一手没关系，掐掉它等于替用户关了他没关的东西。
+     */
+    this.displaceAnalysis(req.board);
+    const synced = await this.sync(req.sgf, req.board);
     if (!synced.ok) {
       return { move: 'pass', visits: 0, winrate: 0, scoreLead: 0, pv: [], resigned: false, error: synced.error };
     }
@@ -426,6 +449,7 @@ export class EngineManager {
         if (!moves.length) return;
         this.emit({
           type: 'info',
+          board: req.board,
           snapshot: {
             nodeId: -1,
             turn: req.color,
@@ -480,7 +504,8 @@ export class EngineManager {
   }
 
   async analyze(req: AnalyzeRequest): Promise<{ ok: boolean; error?: string }> {
-    this.stopAnalysis();
+    // 分析引擎一次只服务一盘：先让位的是自己这一盘（换了个局面重来）还是别人，处理不同
+    this.displaceAnalysis(req.board);
     // 实时分析和复盘抢同一个分析引擎，用户开始看当前局面，复盘就让位（已算完的留着）
     this.stopReview('replaced');
     let engine: GtpEngine;
@@ -493,8 +518,8 @@ export class EngineManager {
     const h = hashText(req.sgf);
     if (this.synced.get(engine) !== h) {
       try {
-        writeFileSync(this.tempSgf, req.sgf, 'utf8');
-        await engine.send(`loadsgf ${this.tempSgf}`, 60000);
+        const file = this.writeTemp(req.sgf, req.board);
+        await engine.send(`loadsgf ${file}`, 60000);
         this.synced.set(engine, h);
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -503,6 +528,7 @@ export class EngineManager {
     await engine.send(`kata-set-param maxVisits ${Math.max(1, Math.round(req.visits))}`, 15000).catch(() => undefined);
     if (req.maxTimeMs > 0) await engine.send(`kata-set-param maxTime ${req.maxTimeMs / 1000}`, 15000).catch(() => undefined);
 
+    const board = req.board;
     const turn: 'B' | 'W' = req.turn;
     const nodeId = req.nodeId;
     // 这个版本的 KataGo 只认 "ownership true"，光写 ownership 会被回 '?'
@@ -534,6 +560,7 @@ export class EngineManager {
       }
       this.emit({
         type: 'info',
+        board,
         snapshot: {
           nodeId,
           turn,
@@ -580,6 +607,7 @@ export class EngineManager {
     });
     const ctl = { stopped: false };
     this.analysis = {
+      board,
       turn,
       nodeId,
       stop: () => {
@@ -593,7 +621,7 @@ export class EngineManager {
         if (!ctl.stopped && emitted === 0) {
           this.analysis = null;
           this.emit({ type: 'log', text: '[分析] 引擎提前结束，没有给出任何结果。' });
-          this.emit({ type: 'error', text: '引擎没有返回分析结果，换个局面或重启引擎再试。' });
+          this.emit({ type: 'error', board, text: '引擎没有返回分析结果，换个局面或重启引擎再试。' });
         }
       },
       (e: unknown) => {
@@ -601,15 +629,40 @@ export class EngineManager {
         const msg = e instanceof Error ? e.message : String(e);
         this.analysis = null;
         this.emit({ type: 'log', text: `[分析] ${msg}` });
-        this.emit({ type: 'error', text: '分析失败：' + msg });
+        this.emit({ type: 'error', board, text: '分析失败：' + msg });
       }
     );
     return { ok: true };
   }
 
-  stopAnalysis(): void {
+  /**
+   * 停实时分析。给了盘号就只停那一盘的：正在跑的是别的盘，这一趟就不动它。
+   * 界面上"关掉这一盘的分析"和"这一盘要落子"都是这个语义。
+   */
+  stopAnalysis(board?: string): void {
+    if (board !== undefined && this.analysis && this.analysis.board !== board) return;
     if (this.analysis?.stop) this.analysis.stop();
     this.analysis = null;
+  }
+
+  /**
+   * 把正在跑的实时分析挪开，好让别人用引擎。
+   *
+   * 同一盘换个局面重来（落一手、翻一手）不算"被顶掉"：界面正等着新结论，
+   * 旧快照还得留在屏幕上。别的盘抢走了才要发一条明确的通知，让它把那盘的
+   * 状态收干净，否则那边会一直显示"分析中"。
+   */
+  private displaceAnalysis(next: string): void {
+    const prev = this.analysis;
+    if (!prev) return;
+    this.stopAnalysis();
+    if (prev.board !== next) {
+      this.emit({
+        type: 'analysisStopped',
+        board: prev.board,
+        analysisStopped: { reason: 'replaced' }
+      });
+    }
   }
 
   /**
@@ -621,7 +674,7 @@ export class EngineManager {
    */
   async review(req: ReviewRequest): Promise<{ ok: boolean; error?: string }> {
     // 复盘和实时分析抢同一个分析引擎，谁开始谁赢，另一个让位
-    this.stopAnalysis();
+    this.displaceAnalysis(req.board);
     this.stopReview('replaced');
     if (req.positions.length === 0) return { ok: false, error: '没有可复盘的着手' };
     let engine: GtpEngine;
@@ -632,6 +685,7 @@ export class EngineManager {
     }
     const ctl = { stopped: false, reason: 'done' as 'done' | 'cancelled' | 'replaced' };
     this.reviewCtl = {
+      board: req.board,
       stop: (reason) => {
         ctl.stopped = true;
         ctl.reason = reason;
@@ -642,7 +696,9 @@ export class EngineManager {
     return { ok: true };
   }
 
-  stopReview(reason: 'cancelled' | 'replaced' = 'cancelled'): void {
+  /** 停复盘。给了盘号就只停那一盘的，别的盘正在跑的复盘不受影响。 */
+  stopReview(reason: 'cancelled' | 'replaced' = 'cancelled', board?: string): void {
+    if (board !== undefined && this.reviewCtl && this.reviewCtl.board !== board) return;
     if (this.reviewCtl?.stop) this.reviewCtl.stop(reason);
   }
 
@@ -655,7 +711,7 @@ export class EngineManager {
     try {
       for (const pos of req.positions) {
         if (ctl.stopped) break;
-        const point = await this.analyzePosition(engine, pos.sgf, {
+        const point = await this.analyzePosition(engine, pos.sgf, req.board, {
           visits: req.visits,
           maxTimeMs: req.maxTimeMs,
           lines: req.lines,
@@ -664,6 +720,7 @@ export class EngineManager {
         // 被叫停时手里这一份也可能是半截的，但它前面那几个局面是完整的，照样发出去
         if (!point) break;
         const wire: ReviewPointWire = {
+          board: req.board,
           nodeId: pos.nodeId,
           ply: pos.ply,
           turn: pos.turn,
@@ -679,7 +736,7 @@ export class EngineManager {
           }))
         };
         done += 1;
-        this.emit({ type: 'review', review: wire, reviewProgress: { done, total: req.positions.length } });
+        this.emit({ type: 'review', board: req.board, review: wire, reviewProgress: { done, total: req.positions.length } });
       }
       this.reviewCtl = null;
       if (ctl.stopped && ctl.reason !== 'done') {
@@ -690,12 +747,12 @@ export class EngineManager {
       } else {
         this.emit({ type: 'log', text: `[复盘] 整局算完，${done} 个局面。` });
       }
-      this.emit({ type: 'reviewEnd', reviewEnd: { reason: ctl.stopped ? ctl.reason : 'done' } });
+      this.emit({ type: 'reviewEnd', board: req.board, reviewEnd: { reason: ctl.stopped ? ctl.reason : 'done' } });
     } catch (e) {
       this.reviewCtl = null;
       const msg = e instanceof Error ? e.message : String(e);
       this.emit({ type: 'log', text: `[复盘] ${msg}` });
-      this.emit({ type: 'reviewEnd', reviewEnd: { reason: 'error', error: msg } });
+      this.emit({ type: 'reviewEnd', board: req.board, reviewEnd: { reason: 'error', error: msg } });
     }
   }
 
@@ -708,6 +765,7 @@ export class EngineManager {
   private async analyzePosition(
     engine: GtpEngine,
     sgf: string,
+    board: string,
     opts: { visits: number; maxTimeMs: number; lines: number; isStopped: () => boolean }
   ): Promise<{
     winrate: number;
@@ -718,8 +776,8 @@ export class EngineManager {
   } | null> {
     const h = hashText(sgf);
     if (this.synced.get(engine) !== h) {
-      writeFileSync(this.tempSgf, sgf, 'utf8');
-      await engine.send(`loadsgf ${this.tempSgf}`, 60000);
+      const file = this.writeTemp(sgf, board);
+      await engine.send(`loadsgf ${file}`, 60000);
       this.synced.set(engine, h);
     }
     await engine.send(`kata-set-param maxVisits ${Math.max(1, Math.round(opts.visits))}`, 15000).catch(() => undefined);
@@ -800,8 +858,8 @@ export class EngineManager {
    * 提示一手。跟对局落子走同一套参数，访客量按分析档，但照样带时限：
    * 大网络上一手提示跑几十秒会让人以为卡住，到点就交现有结论。
    */
-  async hint(sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number): Promise<GenMoveResult> {
-    return this.genMove({ sgf, color, maxVisits: visits, maxTimeMs, allowResign: false, temperature: 0 });
+  async hint(sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number, board: string): Promise<GenMoveResult> {
+    return this.genMove({ board, sgf, color, maxVisits: visits, maxTimeMs, allowResign: false, temperature: 0 });
   }
 
   async benchmark(modelId: string, backend: BackendName): Promise<BenchmarkResult> {

@@ -35,6 +35,9 @@ export const CH = {
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
 
+  sessionGet: 'session:get',
+  sessionSet: 'session:set',
+
   visionChat: 'vision:chat',
 
   browserCapture: 'browser:capture',
@@ -78,6 +81,17 @@ export type AppCommand =
   | 'browserCloseTab'
   | 'browserNextTab'
   | 'browserPrevTab'
+  /** 棋盘标签：开、复制、关、前后切、重开刚关掉的。 */
+  | 'boardNew'
+  | 'boardDuplicate'
+  | 'boardClose'
+  | 'boardCloseOthers'
+  | 'boardCloseAll'
+  | 'boardNext'
+  | 'boardPrev'
+  | 'boardReopen'
+  /** 第 1 到 9 个棋盘，菜单里一人一条。 */
+  | `boardN${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`
   | 'about';
 
 /** 网页点了新标签链接时，主进程把地址交回界面开成标签。 */
@@ -87,7 +101,15 @@ export interface OpenTabRequest {
 }
 
 export interface EngineEvent {
-  type: 'status' | 'info' | 'log' | 'move' | 'error' | 'genmove-done' | 'review' | 'reviewEnd';
+  type: 'status' | 'info' | 'log' | 'move' | 'error' | 'genmove-done' | 'review' | 'reviewEnd' | 'analysisStopped';
+  /**
+   * 这条消息是哪一盘棋的事。
+   *
+   * 开了多个棋盘之后，"跑着的分析是给谁算的"必须说清楚：界面上不止一盘，
+   * 收错了盘子会把结论画到别人的棋盘上。对局引擎的实时战报、分析快照、
+   * 复盘结果、以及那句"你的分析被顶掉了"都带它。状态与日志是全局的，不带。
+   */
+  board?: string;
   status?: EngineStatus;
   snapshot?: AnalysisSnapshot;
   text?: string;
@@ -101,10 +123,19 @@ export interface EngineEvent {
    * error 是引擎出错，done 是整局算完了。前三种都保留已经算出来的那部分。
    */
   reviewEnd?: { reason: 'done' | 'cancelled' | 'replaced' | 'error'; error?: string };
+  /**
+   * 这一盘的实时分析被另一盘顶掉了。
+   *
+   * 分析引擎一次只能服务一盘棋，所以这件事一定会发生。发一条明确的告诉界面，
+   * 那盘才能把"分析中"收干净，而不是留一个看着在转、其实早就断了的圈。
+   */
+  analysisStopped?: { reason: 'replaced' };
 }
 
 /** 主进程算完一个局面后回给界面的结果。胜率一律换算成黑棋视角。 */
 export interface ReviewPointWire {
+  /** 这分结果是给哪一盘算的。 */
+  board: string;
   nodeId: number;
   ply: number;
   turn: 'B' | 'W';
@@ -116,6 +147,8 @@ export interface ReviewPointWire {
 }
 
 export interface ReviewRequest {
+  /** 这盘棋的标签号：复盘结果、被顶掉的说明都要送回它自己那一盘。 */
+  board: string;
   /**
    * 按手顺排好的局面，起始局面在最前面。每个都带一份完整 SGF：
    * 切棋谱是照树切的，那是渲染进程那边 core/sgf 的事，主进程不重复一份解析器。
@@ -153,6 +186,8 @@ export interface VisionResult {
 }
 
 export interface GenMoveRequest {
+  /** 谁要的这一手：战报要送对盘，打断分析时也只能打断它自己那盘。 */
+  board: string;
   /** 当前局面的 SGF 文本，引擎通过 loadsgf 载入。 */
   sgf: string;
   color: 'B' | 'W';
@@ -173,6 +208,8 @@ export interface GenMoveResult {
 }
 
 export interface AnalyzeRequest {
+  /** 这盘棋的标签号：快照要落到它自己那一盘上。 */
+  board: string;
   sgf: string;
   visits: number;
   maxTimeMs: number;
@@ -226,12 +263,13 @@ export interface Api {
     sync(sgf: string): Promise<{ ok: boolean; error?: string }>;
     genMove(req: GenMoveRequest): Promise<GenMoveResult>;
     analyzeStart(req: AnalyzeRequest): Promise<{ ok: boolean; error?: string }>;
-    analyzeStop(): Promise<void>;
+    /** 停掉某一盘的分析：正在跑的是别的盘就不动它。 */
+    analyzeStop(board: string): Promise<void>;
     /** 复盘：把一整局的局面排队逐个分析，结果通过 onEvent 的 review 事件回来。 */
     reviewStart(req: ReviewRequest): Promise<{ ok: boolean; error?: string }>;
-    reviewStop(): Promise<void>;
+    reviewStop(board: string): Promise<void>;
     benchmark(modelId: string, backend: BackendName): Promise<BenchmarkResult>;
-    hint(sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number): Promise<GenMoveResult>;
+    hint(sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number, board: string): Promise<GenMoveResult>;
     onEvent(cb: (e: EngineEvent) => void): () => void;
   };
   models: {
@@ -258,6 +296,14 @@ export interface Api {
   settings: {
     get(): Promise<AppSettings>;
     set(patch: Partial<AppSettings>): Promise<AppSettings>;
+  };
+  /**
+   * 会话：关掉程序时开着的那几盘棋。内容是渲染进程那边定的格式，
+   * 主进程只当它是一包 JSON 存下来（见 core/boards/session.ts）。
+   */
+  session: {
+    get(): Promise<unknown>;
+    set(data: unknown): Promise<void>;
   };
   vision: {
     /** 由主进程代发请求：界面自己的 CSP 不放行外部地址。 */

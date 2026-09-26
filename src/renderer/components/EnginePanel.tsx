@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useStore } from '../state/store';
+import { useThinking, useStore } from '../state/store';
+import { boardTitle } from '../core/boards/boards';
 import { BLACK, WHITE, type AnalysisMove, type AnalysisSnapshot, type ModelEntry } from '../../shared/types';
 
 function blackView(snapshot: AnalysisSnapshot | null): { winrate: number; lead: number } {
@@ -21,7 +22,7 @@ export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCa
   const engine = useStore((s) => s.engineStatus);
   const analyzing = useStore((s) => s.analyzing);
   const analyzeStarting = useStore((s) => s.analyzeStarting);
-  const thinking = useStore((s) => s.thinking);
+  const thinking = useThinking();
   const logs = useStore((s) => s.engineLogs);
   const toggleAnalysis = useStore((s) => s.toggleAnalysis);
   const toast = useStore((s) => s.toast);
@@ -30,6 +31,12 @@ export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCa
   const [showLogs, setShowLogs] = useState(false);
   const [bench, setBench] = useState<string>('');
   const [models, setModels] = useState<ModelEntry[]>([]);
+  /*
+   * 分析引擎一次只服务一盘。别的棋盘上正跑着分析时，这一盘要说明白，
+   * 免得看着"分析关着却有人在算"，或者以为自己的分析丢了。
+   */
+  const otherAnalyzing = useStore((s) => s.boards.find((t) => t.id !== s.activeBoard && t.slice.analyzing) ?? null);
+  const activateBoard = useStore((s) => s.activateBoard);
 
   useEffect(() => {
     void window.api.models.list().then(setModels, () => undefined);
@@ -98,6 +105,16 @@ export function EnginePanel({ snapshot, onShowOwnership, showOwnership, onPickCa
                       : '未启动'}
           </span>
         </div>
+        {otherAnalyzing ? (
+          <div className="field" style={{ marginBottom: 8 }}>
+            <div className="hint">
+              实时分析正在“{boardTitle(otherAnalyzing)}”那一盘上跑（分析引擎一次只服务一盘）。
+            </div>
+            <button className="btn ghost sm" onClick={() => activateBoard(otherAnalyzing.id)}>
+              切过去看看
+            </button>
+          </div>
+        ) : null}
         <div className="wr-block">
           <div className="wr-top">
             <div>

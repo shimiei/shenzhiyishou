@@ -165,6 +165,18 @@ function vertexOf(point: number, size: number): string {
   return Position.gtpVertex(point, size);
 }
 
+/** 还没算过复盘时的空汇总。空盘、刚打开一份棋谱都用它。 */
+export const EMPTY_REVIEW_SUMMARY: ReviewSummary = {
+  moves: 0,
+  best: 0,
+  good: 0,
+  inaccuracy: 0,
+  mistake: 0,
+  blunder: 0,
+  worst: null,
+  totalLoss: 0
+};
+
 export function summarize(moves: ReviewMove[]): ReviewSummary {
   const s: ReviewSummary = {
     moves: moves.length,

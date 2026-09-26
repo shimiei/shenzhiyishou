@@ -52,6 +52,14 @@ export function settingsFile(): string {
   return path.join(userDataRoot(), 'settings.json');
 }
 
+/**
+ * 会话文件：关掉程序时开着的那几盘棋。
+ * 跟 settings.json 分开放：那份是人手动改的偏好，这份是程序自己写的现场，坏了删掉就行。
+ */
+export function sessionFile(): string {
+  return path.join(userDataRoot(), 'session.json');
+}
+
 export function libraryIndexFile(): string {
   return path.join(recordsDir(), 'index.json');
 }

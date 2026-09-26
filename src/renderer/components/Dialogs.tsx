@@ -1122,9 +1122,13 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }): React.ReactEleme
     ['C', '显示或隐藏坐标'],
     ['N', '显示或隐藏手数'],
     ['Ctrl+B', '显示或隐藏内置浏览器'],
-    ['Ctrl+T', '新建浏览器标签页'],
-    ['Ctrl+Shift+W', '关闭浏览器标签页'],
-    ['Ctrl+Tab / Ctrl+Shift+Tab', '切换浏览器标签页'],
+    // 这两套标签键按焦点分流：谁有焦点谁说话。写清楚免得按下去发现关错了
+    ['Ctrl+T', '新建棋盘（焦点在网页里时是新建浏览器标签页）'],
+    ['Ctrl+W', '关闭当前棋盘（焦点在网页里时是关浏览器标签页）'],
+    ['Ctrl+Tab / Ctrl+Shift+Tab', '切换棋盘（焦点在网页里时切换浏览器标签页）'],
+    ['Ctrl+1..9', '跳到第 1 到 9 个棋盘'],
+    ['Ctrl+Shift+D', '复制打开：照这一盘再开一份，两边互不影响'],
+    ['Ctrl+Shift+T', '重开刚关掉的棋盘'],
     ['Ctrl+I', '从图片识别棋谱'],
     ['Ctrl+Shift+C', '截取内置浏览器画面'],
     ['Ctrl+O / Ctrl+S', '打开 / 保存棋谱'],
@@ -1142,6 +1146,65 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }): React.ReactEleme
             <span key={k + 'v'}>{v}</span>
           </>
         ))}
+      </div>
+    </Shell>
+  );
+}
+
+/**
+ * 关掉有改动的棋盘之前问一句。
+ *
+ * 只有"关这一个"才给"保存并关闭"：关一片的时候一盘一盘弹存盘对话框，
+ * 点两下就不知道自己在存哪一盘了，所以那边只说清有几盘没保存，让人自己决定。
+ */
+function CloseBoardDialog({ onClose }: { onClose: () => void }): React.ReactElement {
+  const pending = useStore((s) => s.pendingClose);
+  const boards = useStore((s) => s.boards);
+  const activeBoard = useStore((s) => s.activeBoard);
+  const dirty = useStore((s) => s.dirty);
+  const confirmClose = useStore((s) => s.confirmClose);
+  const cancelClose = useStore((s) => s.cancelClose);
+  const [busy, setBusy] = useState(false);
+  const one = pending?.scope === 'one' ? boards.find((t) => t.id === pending.ids[0]) : undefined;
+  const unsaved =
+    pending?.ids.filter((id) => (id === activeBoard ? dirty : boards.find((t) => t.id === id)?.slice.dirty)).length ?? 0;
+
+  const run = async (mode: 'save' | 'discard'): Promise<void> => {
+    setBusy(true);
+    try {
+      await confirmClose(mode);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Shell title="有改动没保存" onClose={onClose} maxWidth={460}>
+      {one ? (
+        <div className="field">
+          <div className="hint" style={{ fontSize: 12 }}>
+            这一盘{one.slice.filePath ? `（${one.slice.filePath}）` : ''}动过之后还没存过。存一份再关，还是直接关掉？
+          </div>
+        </div>
+      ) : (
+        <div className="field">
+          <div className="hint" style={{ fontSize: 12 }}>
+            这 {pending?.ids.length ?? 0} 盘里还有 {unsaved} 盘没保存。直接关掉的话，那些改动就没了（已经算出来的复盘结果也会跟着走）。
+          </div>
+        </div>
+      )}
+      <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+        <button className="btn ghost" disabled={busy} onClick={() => { cancelClose(); onClose(); }}>
+          取消
+        </button>
+        <button className="btn" disabled={busy} onClick={() => void run('discard')} title="不保存，直接关掉">
+          {one ? '直接关闭' : '全部关掉'}
+        </button>
+        {one ? (
+          <button className="btn primary" disabled={busy} onClick={() => void run('save')}>
+            保存并关闭
+          </button>
+        ) : null}
       </div>
     </Shell>
   );
@@ -1175,6 +1238,8 @@ export function DialogsHost({ snapshot }: { snapshot: AnalysisSnapshot | null })
       return <AboutDialog onClose={close} />;
     case 'shortcuts':
       return <ShortcutsDialog onClose={close} />;
+    case 'closetab':
+      return <CloseBoardDialog onClose={close} />;
     default:
       return null;
   }

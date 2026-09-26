@@ -110,6 +110,34 @@ export function pathTo(tree: GameTree, id: number): number[] {
   return out;
 }
 
+/**
+ * 从根走到这个节点的分支路径：每一层是"在父节点里排第几个孩子"，根是空数组。
+ * 记会话时用它代替节点号：棋谱重新解析一遍，节点号会重新排，只有路径还认得路。
+ */
+export function pathOf(tree: GameTree, id: number): number[] {
+  const ids = pathTo(tree, id);
+  if (ids.length === 0 || ids[0] !== tree.root) return [];
+  const out: number[] = [];
+  for (let i = 1; i < ids.length; i++) {
+    const parent = tree.nodes[ids[i - 1]];
+    const idx = parent ? parent.children.indexOf(ids[i]) : -1;
+    if (idx < 0) return out;
+    out.push(idx);
+  }
+  return out;
+}
+
+/** pathOf 的反面。路径对不上（棋谱换过、分支被删）就停在能走到的那一层。 */
+export function nodeAtPath(tree: GameTree, path: number[]): number {
+  let cur = tree.root;
+  for (const idx of path) {
+    const next = tree.nodes[cur]?.children[idx];
+    if (next === undefined) break;
+    cur = next;
+  }
+  return cur;
+}
+
 /** 计算某个节点处的局面，带缓存。 */
 export function positionAt(tree: GameTree, id: number): Position {
   let map = positionCache.get(tree);

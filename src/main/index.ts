@@ -7,6 +7,7 @@ import { deleteRecord, getRecord, listRecords, loadSettings, saveRecord, saveSet
 import { cancelDownload, downloadModel, importModel, listModels, openModelsFolder, removeModel } from './models';
 import { availableBackends, backendDir, engineRoot, ensureRuntime, logsDir, modelsDir, recordsDir, tmpDir, userDataRoot } from './paths';
 import { fitWindow, type Box } from './windowState';
+import { loadSession, saveSession } from './session';
 import { visionChat } from './vision';
 import { CH, type AppCommand, type AppInfo, type DownloadProgress, type EngineEvent, type VisionRequest } from '../shared/protocol';
 import type { AppSettings, BackendName, RecordMeta } from '../shared/types';
@@ -211,14 +212,23 @@ function createWindow(): void {
       return { action: 'deny' };
     });
     /*
-     * 只有 Ctrl+W 在这儿接，别的标签快捷键交给主菜单的加速键（焦点在网页里也照样触发）。
-     * 分开处理是有原因的：实测 Ctrl+W 的加速键在 Windows 上根本不触发（Ctrl+T、Ctrl+Tab 都正常），
-     * 而 iframe 之外的按键又不会冒泡到界面，所以网页里的 Ctrl+W 只能在这一层拦。
-     * 别顺手把 Ctrl+T 也搬到这儿：加速键和这里会各响应一次，一次按键开出两个标签。
+     * 网页里的标签快捷键在这一层接，是因为 iframe 之外的按键不冒泡到界面。
+     * 这些键在主菜单里都写着 CmdOrCtrl+… 但 registerAccelerator: false 只负责显示，
+     * 真正按下时归谁管看焦点：焦点在网页里走到这儿管浏览器标签，
+     * 焦点在界面里由渲染进程接（管的是棋盘标签）。
+     * 前提是那几个菜单项继续 registerAccelerator: false —— 一旦注册了加速键，
+     * 一次 Ctrl+T 会既走加速键又走这里，开出两个标签。
      */
     guest.on('before-input-event', (_ev, input) => {
-      if (input.type !== 'keyDown' || !input.control || input.shift || input.alt || input.meta) return;
-      if (input.key.toLowerCase() === 'w') send(CH.appCommand, 'browserCloseTab' satisfies AppCommand);
+      if (input.type !== 'keyDown' || !input.control || input.alt || input.meta) return;
+      const key = input.key.toLowerCase();
+      if (key === 't' && !input.shift) send(CH.appCommand, 'browserNewTab' satisfies AppCommand);
+      // Ctrl+Shift+W 是这一条的老写法（当年 Ctrl+W 被 Chromium 吃掉，只能绕一道），
+      // 现在两者都关浏览器标签，照旧按的人不会突然失灵
+      else if (key === 'w') send(CH.appCommand, 'browserCloseTab' satisfies AppCommand);
+      else if (key === 'tab') send(CH.appCommand, (input.shift ? 'browserPrevTab' : 'browserNextTab') satisfies AppCommand);
+      if (key === 'w' && !input.shift) send(CH.appCommand, 'browserCloseTab' satisfies AppCommand);
+      else if (key === 'tab') send(CH.appCommand, (input.shift ? 'browserPrevTab' : 'browserNextTab') satisfies AppCommand);
     });
   });
 
@@ -270,11 +280,16 @@ function buildMenu(): void {
       label: '视图',
       submenu: [
         { label: '显示 / 隐藏内置浏览器', accelerator: 'CmdOrCtrl+B', click: cmd('toggleBrowser') },
-        // 焦点在网页里的时候键盘事件不冒泡到界面，标签页那几条键得靠加速键送进来
-        { label: '新建标签页', accelerator: 'CmdOrCtrl+T', click: cmd('browserNewTab') },
-        { label: '关闭标签页', accelerator: 'CmdOrCtrl+Shift+W', click: cmd('browserCloseTab') },
-        { label: '下一个标签页', accelerator: 'CmdOrCtrl+Tab', click: cmd('browserNextTab') },
-        { label: '上一个标签页', accelerator: 'CmdOrCtrl+Shift+Tab', click: cmd('browserPrevTab') },
+        /*
+         * 浏览器标签这几条只在菜单上写着快捷键，不注册到系统：注册了就会全局抢键，
+         * 焦点在棋盘上按 Ctrl+T 也会去开浏览器标签。真正的分流是"谁有焦点谁说话"：
+         * 网页里由 guest 的 before-input-event 接（Ctrl+W、Ctrl+Tab），
+         * 界面里由渲染进程接（那几个键管的是棋盘标签，见下一栏）。
+         */
+        { label: '新建标签页（网页焦点时 Ctrl+T）', accelerator: 'CmdOrCtrl+T', registerAccelerator: false, click: cmd('browserNewTab') },
+        { label: '关闭标签页', accelerator: 'CmdOrCtrl+W', registerAccelerator: false, click: cmd('browserCloseTab') },
+        { label: '下一个标签页', accelerator: 'CmdOrCtrl+Tab', registerAccelerator: false, click: cmd('browserNextTab') },
+        { label: '上一个标签页', accelerator: 'CmdOrCtrl+Shift+Tab', registerAccelerator: false, click: cmd('browserPrevTab') },
         { type: 'separator' },
         { role: 'resetZoom', label: '实际大小' },
         { role: 'zoomIn', label: '放大' },
@@ -295,6 +310,30 @@ function buildMenu(): void {
         { type: 'separator' },
         { role: 'togglefullscreen', label: '全屏' },
         { role: 'toggleDevTools', label: '开发者工具' }
+      ]
+    },
+    {
+      label: '棋盘标签',
+      submenu: [
+        // 快捷键同样只写不抢（见"视图"里那段说明）：这几个键在界面里有焦点时管棋盘标签，
+        // 在网页里管浏览器标签。
+        { label: '新建棋盘', accelerator: 'CmdOrCtrl+T', registerAccelerator: false, click: cmd('boardNew') },
+        { label: '复制打开（照这一盘再开一份）', accelerator: 'CmdOrCtrl+Shift+D', registerAccelerator: false, click: cmd('boardDuplicate') },
+        { type: 'separator' },
+        { label: '关闭这个棋盘', accelerator: 'CmdOrCtrl+W', registerAccelerator: false, click: cmd('boardClose') },
+        { label: '关闭其他棋盘', click: cmd('boardCloseOthers') },
+        { label: '关闭全部棋盘（留一盘空的）', click: cmd('boardCloseAll') },
+        { type: 'separator' },
+        { label: '下一个棋盘', accelerator: 'CmdOrCtrl+Tab', registerAccelerator: false, click: cmd('boardNext') },
+        { label: '上一个棋盘', accelerator: 'CmdOrCtrl+Shift+Tab', registerAccelerator: false, click: cmd('boardPrev') },
+        { label: '重开刚关掉的棋盘', accelerator: 'CmdOrCtrl+Shift+T', registerAccelerator: false, click: cmd('boardReopen') },
+        { type: 'separator' },
+        ...([1, 2, 3, 4, 5, 6, 7, 8, 9] as const).map((n) => ({
+          label: `第 ${n} 个棋盘`,
+          accelerator: `CmdOrCtrl+${n}`,
+          registerAccelerator: false,
+          click: () => send(CH.appCommand, `boardN${n}` as AppCommand)
+        }))
       ]
     },
     {
@@ -335,16 +374,16 @@ function registerIpc(): void {
   });
   ipcMain.handle(CH.engineSync, async (_e, sgf: string) => engine.sync(sgf));
   ipcMain.handle(CH.engineGenMove, async (_e, req: Parameters<EngineManager['genMove']>[0]) => engine.genMove(req));
-  ipcMain.handle(CH.engineHint, async (_e, sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number) =>
-    engine.hint(sgf, visits, color, maxTimeMs)
+  ipcMain.handle(CH.engineHint, async (_e, sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number, board: string) =>
+    engine.hint(sgf, visits, color, maxTimeMs, board)
   );
   ipcMain.handle(CH.engineAnalyzeStart, async (_e, req: Parameters<EngineManager['analyze']>[0]) => engine.analyze(req));
-  ipcMain.handle(CH.engineAnalyzeStop, async () => {
-    engine.stopAnalysis();
+  ipcMain.handle(CH.engineAnalyzeStop, async (_e, board: string) => {
+    engine.stopAnalysis(board);
   });
   ipcMain.handle(CH.engineReviewStart, async (_e, req: Parameters<EngineManager['review']>[0]) => engine.review(req));
-  ipcMain.handle(CH.engineReviewStop, async () => {
-    engine.stopReview('cancelled');
+  ipcMain.handle(CH.engineReviewStop, async (_e, board: string) => {
+    engine.stopReview('cancelled', board);
   });
   ipcMain.handle(CH.engineBenchmark, async (_e, modelId: string, backend: BackendName) => engine.benchmark(modelId, backend));
 
@@ -419,6 +458,12 @@ function registerIpc(): void {
     engine.setSettings(next as Partial<AppSettings>);
     if (patch.theme) applyThemeToWindow(patch.theme);
     return next;
+  });
+
+  // 会话就是渲染进程交上来的一包 JSON（哪几盘棋开着），主进程不解释它，只负责存取
+  ipcMain.handle(CH.sessionGet, () => loadSession());
+  ipcMain.handle(CH.sessionSet, async (_e, data: unknown) => {
+    saveSession(data);
   });
 
   /*

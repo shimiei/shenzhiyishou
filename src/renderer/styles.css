@@ -1231,7 +1231,8 @@ input[type='checkbox'] {
   border-top: 1px solid var(--border-soft);
 }
 
-.browser-tabs {
+.browser-tabs,
+.board-tabs {
   display: flex;
   align-items: flex-end;
   gap: 3px;
@@ -1243,6 +1244,7 @@ input[type='checkbox'] {
   scrollbar-width: thin;
 }
 
+.board-tab,
 .browser-tab {
   display: flex;
   align-items: center;
@@ -1260,11 +1262,13 @@ input[type='checkbox'] {
   user-select: none;
 }
 
-.browser-tab:hover {
+.browser-tab:hover,
+.board-tab:hover {
   background: var(--bg-soft);
 }
 
-.browser-tab.active {
+.browser-tab.active,
+.board-tab.active {
   background: var(--panel-2);
   border-color: var(--border-soft);
   color: var(--text);
@@ -1272,13 +1276,15 @@ input[type='checkbox'] {
   box-shadow: inset 0 2px 0 var(--accent);
 }
 
-.browser-tab-title {
+.browser-tab-title,
+.board-tab-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.browser-tab-close {
+.browser-tab-close,
+.board-tab-close {
   display: grid;
   place-items: center;
   width: 16px;
@@ -1290,12 +1296,14 @@ input[type='checkbox'] {
   cursor: pointer;
 }
 
-.browser-tab-close:hover {
+.browser-tab-close:hover,
+.board-tab-close:hover {
   background: var(--red-soft);
   color: var(--red);
 }
 
-.browser-tab-new {
+.browser-tab-new,
+.board-tab-new {
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
@@ -1310,9 +1318,65 @@ input[type='checkbox'] {
   cursor: pointer;
 }
 
-.browser-tab-new:hover {
+.browser-tab-new:hover,
+.board-tab-new:hover {
   background: var(--accent-soft);
   color: var(--accent-text);
+}
+
+/* 棋盘标签：跟内置浏览器那套共用上面的规矩，这里只加棋盘特有的几样 */
+
+/* 只有一盘棋的时候整条收起来，不白占一行 */
+.board-tabs.empty {
+  display: none;
+}
+
+.board-tabs {
+  padding: 4px 6px 0;
+  margin-bottom: -1px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+
+.board-tab {
+  max-width: 200px;
+}
+
+/* 有改动没保存：名字前面一个小点 */
+.board-tab-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* 这一盘正跑着什么：分析、复盘、机机 */
+.board-tab-badges {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 4px;
+}
+
+.board-tab-badge {
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.board-tab-badge.review {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.board-tab-badge.engine {
+  background: var(--red-soft);
+  color: var(--red);
 }
 
 .browser-bar {

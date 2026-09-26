@@ -1,4 +1,4 @@
-import { useStore } from '../state/store';
+import { useThinking, useStore } from '../state/store';
 
 export function TitleBar(): React.ReactElement {
   const filePath = useStore((s) => s.filePath);
@@ -6,7 +6,7 @@ export function TitleBar(): React.ReactElement {
   const engine = useStore((s) => s.engineStatus);
   const theme = useStore((s) => s.theme);
   const setSettings = useStore((s) => s.setSettings);
-  const thinking = useStore((s) => s.thinking);
+  const thinking = useThinking();
   const analyzing = useStore((s) => s.analyzing);
 
   const fileName = filePath ? filePath.split(/[\\/]/).pop() : '未命名棋谱';

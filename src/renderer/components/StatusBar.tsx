@@ -1,4 +1,4 @@
-import { useStore } from '../state/store';
+import { useThinking, useStore } from '../state/store';
 import { canSetTurn, colorToPlayAt, moveNumberAt, positionAt, propNum } from '../core/sgf/tree';
 import { adviceChip, colorName } from '../core/advice';
 import { BLACK } from '../../shared/types';
@@ -8,7 +8,7 @@ export function StatusBar(): React.ReactElement {
   const current = useStore((s) => s.current);
   const engine = useStore((s) => s.engineStatus);
   const analyzing = useStore((s) => s.analyzing);
-  const thinking = useStore((s) => s.thinking);
+  const thinking = useThinking();
   const finished = useStore((s) => s.finished);
   const game = useStore((s) => s.game);
   const toggleAiVsAi = useStore((s) => s.toggleAiVsAi);

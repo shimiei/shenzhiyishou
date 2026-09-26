@@ -19,6 +19,7 @@ import { visionBody, visionChat, visionPrompt } from '../src/main/vision';
 import {
   buildReview,
   curvePoints,
+  EMPTY_REVIEW_SUMMARY,
   nextProblem,
   problemMoves,
   summarize,
@@ -31,14 +32,41 @@ import {
   addMoveNode,
   canSetTurn,
   colorToPlayAt,
+  countNodes,
   createTree,
   endedByDoublePass,
+  moveNumberAt,
   moveSourceOf,
+  nodeAtPath,
+  pathOf,
   positionAt,
   positionKey,
+  propNum,
   setProp,
   setTurnAt
 } from '../src/renderer/core/sgf/tree';
+import {
+  BOARD_KEYS,
+  DEFAULT_GAME,
+  boardBadges,
+  boardTitle,
+  boardTooltip,
+  cloneSlice,
+  closeBoard,
+  copiedBoard,
+  emptySlice,
+  everyBoardKeyIsListed,
+  freshBoard,
+  gameModeText,
+  hasUnsaved,
+  nthBoard,
+  openBoard,
+  sliceFrom,
+  stepBoard,
+  type BoardSlice,
+  type BoardTab
+} from '../src/renderer/core/boards/boards';
+import { SESSION_VERSION, fromSession, toSession } from '../src/renderer/core/boards/session';
 import {
   DEFAULT_LEFT,
   DEFAULT_RIGHT,
@@ -83,6 +111,11 @@ function section(title: string): void {
 /** 造几个标签，id 固定好断言。 */
 function tabs(...urls: string[]): BrowserTab[] {
   return urls.map((u, i) => ({ id: 't' + (i + 1), url: u, title: '' }));
+}
+
+/** 造几个棋盘标签，id 固定好断言。 */
+function boards(...ids: string[]): BoardTab[] {
+  return ids.map((id) => ({ id, note: '', slice: emptySlice() }));
 }
 
 section('标签：新建');
@@ -140,6 +173,234 @@ section('标签：标题');
   eq(tabTitle({ id: 'x', url: 'about:blank', title: '' }), '新标签页', '空白页给个中文名');
   ok(tabTitle({ id: 'x', url: 'https://a.com', title: '这是一个特别特别长的标题超过限制了' }).length <= 18, '过长的标题被截断');
   eq(tabTitle({ id: 'x', url: '不是网址', title: '' }), '不是网址', '解析不了就原样显示');
+}
+
+section('SGF 路径：记会话时用分支路径代替节点号');
+{
+  const t0 = createTree(19, 7.5);
+  const m1 = addMoveNode(t0, t0.root, BLACK, 3 * 19 + 3);
+  const m2 = addMoveNode(m1.tree, m1.id, WHITE, 15 * 19 + 15);
+  const br = addMoveNode(m2.tree, m2.id, BLACK, 5 * 19 + 5);
+  // 第三手走主干时，新着法会被提到第一个孩子，刚才那一手退到第二个
+  const m3 = addMoveNode(br.tree, m2.id, WHITE, 9 * 19 + 9);
+  const tree = m3.tree;
+
+  eq(pathOf(tree, tree.root).join(','), '', '根节点的路径是空的');
+  eq(pathOf(tree, m1.id).join(','), '0', '第一手是第一层的第 0 个');
+  eq(pathOf(tree, m3.id).join(','), '0,0,0', '主干走到底');
+  eq(pathOf(tree, br.id).join(','), '0,0,1', '先进去的那一手退成了第二个孩子');
+  eq(nodeAtPath(tree, pathOf(tree, br.id)), br.id, '路径能原样找回分支上的节点');
+  eq(nodeAtPath(tree, []), tree.root, '空路径就是根节点');
+  eq(nodeAtPath(tree, [0, 0, 1, 5]), br.id, '路径后半截对不上时停在能走到的那一层');
+
+  const back = parseSgf(serializeSgf(tree))[0];
+  eq(positionKey(back, nodeAtPath(back, pathOf(tree, m3.id))), positionKey(tree, m3.id), '存下来读回去，主干那一手的局面还在');
+  eq(positionKey(back, nodeAtPath(back, pathOf(tree, br.id))), positionKey(tree, br.id), '分支那一手的局面也在');
+
+  const empty = createTree(9, 5.5);
+  eq(pathOf(empty, empty.root).join(','), '', '空盘的根节点也是空路径');
+  eq(nodeAtPath(empty, [1, 2]), empty.root, '空盘上乱给一条路径也只会落到根上');
+}
+
+section('棋盘标签：开、关、轮流切换');
+{
+  const two = boards('b1', 'b2');
+  const r1 = openBoard(two, { id: 'b3', note: '', slice: emptySlice() }, 'b1');
+  eq(r1.tabs.length, 3, '多了一个棋盘');
+  eq(r1.activeId, 'b3', '新建的接管当前');
+  eq(r1.tabs[0].id, 'b1', '原来的还在原位');
+
+  const r2 = openBoard(two, { id: 'b3', note: '', slice: emptySlice() }, 'b1', false);
+  eq(r2.activeId, 'b1', '后台新建不抢当前');
+
+  const three = boards('b1', 'b2', 'b3');
+  const mid = closeBoard(three, 'b2', 'b2');
+  eq(mid.tabs.map((t) => t.id).join(','), 'b1,b3', '关掉中间那个');
+  eq(mid.activeId, 'b3', '关掉当前那个就接管右边');
+  const rightEnd = closeBoard(three, 'b3', 'b3');
+  eq(rightEnd.activeId, 'b2', '关掉最右边那个就回左边');
+  const other = closeBoard(three, 'b1', 'b2');
+  eq(other.activeId, 'b2', '关的不是当前那个时当前不动');
+  eq(other.tabs.length, 2, '标签确实少了一个');
+  const ghost = closeBoard(three, 'nope', 'b2');
+  eq(ghost.tabs.length, 3, '关一个不存在的棋盘什么都不做');
+
+  const lastOne = closeBoard(boards('b1'), 'b1', 'b1');
+  eq(lastOne.tabs.length, 0, '关掉最后一个棋盘');
+  eq(lastOne.activeId, '', '没有当前棋盘了，调用方要补一盘空的');
+
+  eq(stepBoard(three, 'b1', 1), 'b2', '往后切');
+  eq(stepBoard(three, 'b3', 1), 'b1', '最后一个往后切绕回第一个');
+  eq(stepBoard(three, 'b1', -1), 'b3', '往前切绕到最后一个');
+  eq(stepBoard(three, 'nope', 1), 'b1', '当前认不出来时从第一个开始');
+  eq(nthBoard(three, 1), 'b1', '第一个');
+  eq(nthBoard(three, 3), 'b3', '第三个');
+  eq(nthBoard(three, 9), '', '没有第九个就给空串');
+}
+
+section('棋盘标签：标题、角标、提示');
+{
+  const plain = boards('b1')[0];
+  eq(boardTitle(plain), '未命名对局', '新盘写未命名对局');
+  const saved: BoardTab = { id: 'x', note: '', slice: { ...emptySlice(), filePath: 'C:\\棋谱\\对局 1.sgf' } };
+  eq(boardTitle(saved), '对局 1.sgf', '存过盘就写文件名');
+  const copy: BoardTab = { id: 'x', note: '副本', slice: { ...emptySlice(), dirty: true } };
+  eq(boardTitle(copy), '副本', '没存过的副本写副本');
+  const copySaved: BoardTab = { id: 'x', note: '副本', slice: { ...emptySlice(), filePath: 'D:\\a\\b\\新对局.sgf' } };
+  eq(boardTitle(copySaved), '新对局.sgf', '副本存过盘之后就写它自己的文件名');
+  const longName: BoardTab = { id: 'x', note: '', slice: { ...emptySlice(), filePath: 'C:\\' + '很长的名字'.repeat(6) + '.sgf' } };
+  ok(boardTitle(longName).length <= 16, '过长的文件名截断', boardTitle(longName));
+
+  eq(boardBadges(plain).length, 0, '空盘上没有角标');
+  eq(boardBadges({ id: 'x', note: '', slice: { ...emptySlice(), analyzing: true } }).join(','), '分析', '分析中有角标');
+  const busy: BoardTab = {
+    id: 'x',
+    note: '',
+    slice: { ...emptySlice(), analyzing: true, reviewRunning: true, game: { ...DEFAULT_GAME, mode: 'ai-vs-ai' } }
+  };
+  eq(boardBadges(busy).join(','), '分析,复盘,机机', '三样一起跑就有三个角标');
+
+  ok(boardTooltip(saved).includes('19 路'), '提示里有路数');
+  ok(boardTooltip(saved).includes('贴 7.5 目'), '提示里有贴目');
+  ok(boardTooltip(saved).includes('第 0 手'), '提示里有手数');
+  ok(boardTooltip(saved).includes('对局 1.sgf'), '提示里有文件名');
+  const vsAi: BoardTab = { id: 'x', note: '', slice: { ...emptySlice(), game: { ...DEFAULT_GAME, mode: 'vs-ai', humanColor: WHITE } } };
+  ok(boardTooltip(vsAi).includes('人机对局'), '提示里有对弈方式');
+  eq(gameModeText(vsAi.slice.game), '人机对局 · 你执白', '状态行那句话跟着执白走');
+  eq(gameModeText({ ...DEFAULT_GAME, mode: 'ai-vs-ai' }), '机机对局', '机机那句话');
+  eq(gameModeText(DEFAULT_GAME), '辅助模式 · AI 不自己落子', '手动那句话');
+
+  eq(hasUnsaved(plain), false, '没动过的盘不算未保存');
+  eq(hasUnsaved(copy), true, '动过的盘算未保存');
+}
+
+section('棋盘切片：哪些字段属于一盘棋');
+{
+  const s = emptySlice();
+  eq(Object.keys(s).length, BOARD_KEYS.length, '切片的字段数正好是清单的长度');
+  eq(everyBoardKeyIsListed, true, 'BOARD_KEYS 覆盖了切片里的每一个字段');
+  const withGlobal = { ...s, settings: {}, toasts: [], boards: {}, activeBoard: 'x' } as unknown as BoardSlice;
+  const picked = sliceFrom(withGlobal);
+  eq(Object.keys(picked).length, BOARD_KEYS.length, '换出时只挑清单里的字段');
+  eq('settings' in picked, false, '设置不会被卷进一盘棋');
+  eq('activeBoard' in picked, false, '标签自己的字段也不会被卷进去');
+
+  eq(propNum(s.tree, s.tree.root, 'SZ', 0), 19, '新盘默认 19 路');
+  eq(propNum(s.tree, s.tree.root, 'KM', 0), 7.5, '新盘默认贴 7.5 目');
+  eq(s.dirty, false, '新盘不算未保存');
+  eq(s.autoReturn, 'manual', '新盘没开机机');
+  eq(s.reviewSummary.moves, 0, '新盘没有复盘汇总');
+  eq(s.analyzing, false, '新盘不在分析');
+}
+
+section('棋盘切片：复制一盘出来');
+{
+  const m = addMoveNode(emptySlice().tree, 1, BLACK, 3 * 19 + 3);
+  const point: ReviewPoint = {
+    nodeId: 2,
+    ply: 1,
+    turn: 'B',
+    blackWinrate: 0.52,
+    blackScoreLead: 1.5,
+    visits: 120,
+    bestMove: 'D16',
+    candidates: []
+  };
+  const src: BoardSlice = {
+    ...emptySlice(),
+    tree: m.tree,
+    current: m.id,
+    filePath: 'C:\\棋谱\\原盘.sgf',
+    dirty: false,
+    past: [createTree(19, 7.5)],
+    game: { ...DEFAULT_GAME, mode: 'ai-vs-ai', visits: 800 },
+    finished: '黑中盘胜',
+    reviewPoints: { 2: point },
+    reviewSign: { 2: 'sign' },
+    reviewMoves: [
+      { nodeId: 2, ply: 1, turn: 'B', loss: 0, grade: 'best', played: 'D16', bestMove: 'D16', winrate: 0.52, bestWinrate: 0.52 }
+    ],
+    reviewSummary: { ...EMPTY_REVIEW_SUMMARY, moves: 1, best: 1 }
+  };
+  const cp = cloneSlice(src);
+  eq(cp.filePath, null, '副本不指向原文件');
+  eq(cp.dirty, true, '原件存过盘，副本算还没存过');
+  eq(cp.game.visits, 800, '对局强度跟着过来');
+  eq(cp.game.mode, 'manual', '对弈方式退回手动，副本不该一开就自己下');
+  eq(cp.finished, '黑中盘胜', '结局跟着过来');
+  eq(cp.current, src.current, '落点还是同一手');
+  eq(cp.past.length, 0, '撤销历史不带过去');
+  eq(cp.analyzing, false, '分析状态不带过去');
+  ok(cp.tree !== src.tree, '棋谱是克隆出来的另一棵');
+  eq(countNodes(cp.tree), countNodes(src.tree), '克隆出来的节点数一样');
+  eq(Object.keys(cp.reviewPoints).length, 1, '复盘结果跟着棋谱走');
+  eq(cp.reviewSummary.best, 1, '复盘汇总也跟着');
+  eq(copiedBoard(src).note, '副本', '复制出来的标签写明是副本');
+
+  const grown = addMoveNode(cp.tree, cp.current, WHITE, 15 * 19 + 15);
+  eq(countNodes(grown.tree), countNodes(src.tree) + 1, '在副本上落一手，副本自己长一手');
+  eq(countNodes(src.tree), 2, '原件还是两手，一点没动');
+}
+
+section('会话文件：关掉再打开还在');
+{
+  const one = addMoveNode(freshBoard().slice.tree, 1, BLACK, 3 * 19 + 3);
+  const two = addMoveNode(one.tree, one.id, WHITE, 15 * 19 + 15);
+  const mainLine: BoardTab = {
+    id: 'A',
+    note: '',
+    slice: {
+      ...emptySlice(),
+      tree: two.tree,
+      current: one.id,
+      filePath: 'C:\\棋谱\\a.sgf',
+      dirty: true,
+      game: { ...DEFAULT_GAME, mode: 'vs-ai', visits: 600, timeMs: 2500 },
+      finished: '白中盘胜'
+    }
+  };
+  const duplication: BoardTab = { id: 'B', note: '副本', slice: { ...emptySlice(), dirty: false } };
+  const s = toSession([mainLine, duplication], 'B');
+  eq(s.version, SESSION_VERSION, '会话文件带版本号');
+  eq(s.boards.length, 2, '两盘都记下来了');
+  eq(s.active, 'B', '当前是哪一盘也记下来');
+
+  const back = fromSession(s);
+  ok(back !== null, '读得回来');
+  const [ra, rb] = back!.tabs;
+  eq(back!.activeId, 'B', '当前标签还是那一盘');
+  eq(ra.id, 'A', '标签编号也留着');
+  eq(boardTitle(rb), '副本', '副本的说明留着');
+  eq(
+    positionKey(ra.slice.tree, ra.slice.current),
+    positionKey(mainLine.slice.tree, mainLine.slice.current),
+    '按路径找回来了，还是同一手'
+  );
+  eq(moveNumberAt(ra.slice.tree, ra.slice.current), 1, '手数也对');
+  eq(ra.slice.filePath, 'C:\\棋谱\\a.sgf', '文件路径留着');
+  eq(ra.slice.dirty, true, '未保存标记留着');
+  eq(ra.slice.finished, '白中盘胜', '结局留着');
+  eq(ra.slice.game.visits, 600, '对局强度留着');
+  eq(ra.slice.game.timeMs, 2500, '每步限时留着');
+  eq(ra.slice.game.mode, 'vs-ai', '对弈方式留着');
+  eq(ra.slice.analyzing, false, '读回来不带着分析状态，重开程序不该自己去占显卡');
+  eq(ra.slice.reviewRunning, false, '也不带着复盘状态');
+  eq(Object.keys(ra.slice.reviewPoints).length, 0, '复盘结果不落盘');
+
+  eq(fromSession(null), null, '没有会话文件就老老实实开一盘空棋');
+  eq(fromSession({ version: 999, active: 'A', boards: [] }), null, '版本对不上不认');
+  eq(fromSession({ version: SESSION_VERSION, active: 'A', boards: [] }), null, '一盘都没有就不认');
+  const halfBad = fromSession({
+    version: SESSION_VERSION,
+    active: 'zzz',
+    boards: [
+      { id: 'A', note: '', sgf: 12345, path: [], filePath: null, dirty: false, game: DEFAULT_GAME, finished: null },
+      s.boards[1]
+    ]
+  });
+  ok(halfBad !== null, '坏掉的那一盘被跳过，其余照收');
+  eq(halfBad!.tabs.length, 1, '只收下能读的那一盘');
+  eq(halfBad!.activeId, 'B', '当前标签对不上时落到第一盘，不会一头雾水');
 }
 
 section('地址栏：输入理解');

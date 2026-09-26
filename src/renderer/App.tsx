@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useStore, activeWebContentsId } from './state/store';
+import { useThinking, useStore, activeWebContentsId } from './state/store';
 import { TitleBar } from './components/TitleBar';
 import { Toolbar } from './components/Toolbar';
+import { BoardTabs } from './components/BoardTabs';
 import { LeftPanel } from './components/LeftPanel';
 import { EnginePanel } from './components/EnginePanel';
 import { StatusBar } from './components/StatusBar';
@@ -39,6 +40,7 @@ export function App(): React.ReactElement {
   const boot = useStore((s) => s.boot);
   const tree = useStore((s) => s.tree);
   const current = useStore((s) => s.current);
+  const activeBoard = useStore((s) => s.activeBoard);
   const analyzing = useStore((s) => s.analyzing);
   const snapshot = useStore((s) => s.analysis);
   const browserOpen = useStore((s) => s.browserOpen);
@@ -65,7 +67,7 @@ export function App(): React.ReactElement {
   const hint = useStore((s) => s.hint);
   const tool = useStore((s) => s.tool);
   const setTool = useStore((s) => s.setTool);
-  const thinking = useStore((s) => s.thinking);
+  const thinking = useThinking();
   const wsRef = useRef<HTMLDivElement | null>(null);
 
   useShortcuts();
@@ -102,25 +104,33 @@ export function App(): React.ReactElement {
       else if (e.type === 'log' && e.text) st.pushLog(e.text);
       else if (e.type === 'error' && e.text) {
         st.toast(e.text, 'error');
-        // 走 stopAnalysis 而不是直接清 analysis：它会一并把 analyzing 置回 false，
-        // 否则上面那个重新分析的效果会立刻再发一次，变成死循环。
-        void st.stopAnalysis();
+        if (e.board) {
+          /*
+           * 出错的是某一盘的分析流：把那一盘收干净就行。
+           * 走停分析那一套（状态先落、再问引擎）而不是直接清字段，
+           * 否则"局面一变就重开分析"那个效果会立刻再发一次，变成死循环。
+           */
+          st.patchBoard(e.board, { analyzing: false, analysis: null });
+          void window.api.engine.analyzeStop(e.board);
+        } else {
+          void st.stopAnalysis();
+        }
       } else if (e.type === 'info' && e.snapshot) {
-        const snap = e.snapshot;
         /*
          * nodeId 为 -1 的是对局引擎"正在算这一手"的实时战报，跟实时分析不是一回事，
          * 分析关着的时候也照收（不然 AI 落子那几秒面板上什么都不显示）。
          * 带节点号的是分析结论，分析关掉之后流断开之前可能还有一两行在路上，
-         * 别让它们把刚清空的面板又填上。
+         * 别让它们把刚清空的面板又填上（这一层判断在 applySnapshot 里）。
+         * 落到哪一盘由 board 说了算：开着的棋盘不止一盘，收错了盘子会画到别人的谱上。
          */
-        if (snap.nodeId >= 0 && !st.analyzing) return;
-        if (snap.nodeId >= 0 && snap.nodeId !== useStore.getState().current) return;
-        st.setAnalysis(snap);
+        st.applySnapshot(e.board ?? '', e.snapshot);
+      } else if (e.type === 'analysisStopped') {
+        st.analysisReplaced(e.board ?? '');
       } else if (e.type === 'review' && e.review) {
-        st.addReviewPoint(e.review);
-        if (e.reviewProgress) useStore.setState({ reviewDone: e.reviewProgress.done, reviewTotal: e.reviewProgress.total });
+        st.addReviewPoint(e.review, e.review.board);
+        if (e.reviewProgress) st.patchBoard(e.review.board, { reviewDone: e.reviewProgress.done, reviewTotal: e.reviewProgress.total });
       } else if (e.type === 'reviewEnd' && e.reviewEnd) {
-        st.endReview(e.reviewEnd.reason, e.reviewEnd.error);
+        st.endReview(e.reviewEnd.reason, e.reviewEnd.error, e.board ?? '');
       }
     });
     return off;
@@ -132,7 +142,13 @@ export function App(): React.ReactElement {
   // 界面上的候选永远停在最初那几个一访的点上。用 ref 读当前值即可。
   const analyzingRef = useRef(analyzing);
   analyzingRef.current = analyzing;
+  // 上一次触发这个效果时是哪一盘。换了盘就不再往下走：切标签不是"局面变了"，
+  // 那一盘该跑的分析由它自己的状态（和主进程那头记的归属）说了算。
+  const boardRef = useRef(activeBoard);
   useEffect(() => {
+    const switched = boardRef.current !== activeBoard;
+    boardRef.current = activeBoard;
+    if (switched) return;
     if (!analyzingRef.current) return;
     const t = setTimeout(() => {
       // 这 200 毫秒里用户可能已经把分析关了（刚落一手就点暂停），那这一手之后就别再拉起来
@@ -140,7 +156,7 @@ export function App(): React.ReactElement {
       void useStore.getState().startAnalysis(true);
     }, 200);
     return () => clearTimeout(t);
-  }, [current, tree, settings.analyzeVisits]);
+  }, [current, tree, activeBoard, settings.analyzeVisits]);
 
   // 实时截取：每两三秒看一眼网页上的棋盘。间隔不敢再短，截一张加认一次要两三百毫秒，
   // 而且网页那头落完子常有动画，截太勤容易拍到还没落定的画面。
@@ -275,11 +291,39 @@ export function App(): React.ReactElement {
         case 'browserPrevTab':
           s.stepBrowserTab(-1);
           break;
+        case 'boardNew':
+          s.openBoardTab();
+          break;
+        case 'boardDuplicate':
+          s.duplicateBoard();
+          break;
+        case 'boardClose':
+          s.closeBoardTab(s.activeBoard);
+          break;
+        case 'boardCloseOthers':
+          s.closeOtherBoards();
+          break;
+        case 'boardCloseAll':
+          s.closeAllBoards();
+          break;
+        case 'boardNext':
+          s.stepBoardTab(1);
+          break;
+        case 'boardPrev':
+          s.stepBoardTab(-1);
+          break;
+        case 'boardReopen':
+          s.reopenBoard();
+          break;
         case 'about':
           s.setDialog('about');
           break;
-        default:
+        default: {
+          // 菜单里"第 N 个棋盘"那九条
+          const nth = /^boardN([1-9])$/.exec(cmd);
+          if (nth) s.nthBoardTab(Number(nth[1]));
           break;
+        }
       }
     });
     return off;
@@ -436,6 +480,7 @@ export function App(): React.ReactElement {
                 position: 'relative'
               }}
             >
+              <BoardTabs />
               <div className="toolbar" style={{ height: 34, minHeight: 34, background: 'transparent', borderBottom: 'none', paddingTop: 4 }}>
                 <div className="seg" title="落子与编辑工具">
                   {(

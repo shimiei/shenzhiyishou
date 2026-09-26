@@ -33,14 +33,45 @@ export function useShortcuts(): void {
         return;
       }
       /*
-       * Ctrl+W 同理，只是方向相反：菜单里那条加速键在 Windows 上不触发（Ctrl+Shift+W 才触发），
-       * 所以界面里这份是主力，网页里那份在主进程用 before-input-event 拦。
-       * 只认不带 Shift 的，免得跟菜单里的 Ctrl+Shift+W 撞上关两次。
+       * Ctrl+W 同理，只是方向相反：菜单里那条加速键在 Windows 上不触发（Ctrl+Shift+W 才触发）。
+       * 这里这份管的是棋盘标签（焦点在界面里时按的）；焦点在网页里的时候按键不冒泡到这里，
+       * 由主进程 before-input-event 拦下来关浏览器标签，两边各管各的，不会一次关两个。
        */
       if (ctrl && !e.shiftKey && e.key.toLowerCase() === 'w') {
         e.preventDefault();
-        const id = s.activeTabId ?? s.tabs[0]?.id;
-        if (id) s.closeBrowserTab(id);
+        s.closeBoardTab(s.activeBoard);
+        return;
+      }
+      /* 棋盘标签那套键：Ctrl+T 新建、Ctrl+Tab 前后切、Ctrl+1..9 跳、Ctrl+Shift+D 复制一份。
+         焦点在网页里时这些键同样不冒泡到这儿（那边归浏览器标签），要浏览器标签请用菜单。 */
+      if (ctrl && !e.shiftKey && e.key === 'Tab') {
+        e.preventDefault();
+        s.stepBoardTab(1);
+        return;
+      }
+      if (ctrl && e.shiftKey && e.key === 'Tab') {
+        e.preventDefault();
+        s.stepBoardTab(-1);
+        return;
+      }
+      if (ctrl && !e.shiftKey && e.key.toLowerCase() === 't') {
+        e.preventDefault();
+        s.openBoardTab();
+        return;
+      }
+      if (ctrl && e.shiftKey && e.key.toLowerCase() === 't') {
+        e.preventDefault();
+        s.reopenBoard();
+        return;
+      }
+      if (ctrl && e.shiftKey && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        s.duplicateBoard();
+        return;
+      }
+      if (ctrl && !e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key)) {
+        e.preventDefault();
+        s.nthBoardTab(Number(e.key));
         return;
       }
       if (ctrl) return;
