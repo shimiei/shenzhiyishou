@@ -86,6 +86,7 @@ function toGeom(g: GeomLine): DesktopGeom {
     iconic: g.iconic,
     visible: g.visible,
     foreground: g.foreground,
+    dpi: g.dpi ?? 0,
     gone: g.gone === true
   };
 }

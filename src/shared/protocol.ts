@@ -137,6 +137,11 @@ export interface DesktopGeom {
   iconic: boolean;
   visible: boolean;
   foreground: boolean;
+  /**
+   * 读窗口那个助手进程的 DPI 感知（2 = 每显示器感知）。
+   * 上面两个矩形是不是物理像素全看它：不是 2 就说明跟 DWM 报的那一套混着了，缩放不是 100% 时会点偏。
+   */
+  dpi?: number;
   /** 窗口已经没了（关掉了）。 */
   gone: boolean;
 }

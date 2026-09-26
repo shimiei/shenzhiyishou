@@ -26,17 +26,18 @@ npm run dist         # 出安装包和便携版，产物在 release/
 自测脚本，改完规则、识别算法或窗口逻辑先跑一遍：
 
 ```
-npm test                      # 下面四份纯逻辑自测一起跑
+npm test                      # 下面五份自测一起跑
 npm run test:rules            # 规则引擎：落子、提子、自杀、劫、超级劫、数子、坐标
 npm run test:window           # 窗口尺寸与位置：居中、越界拉回、换屏幕、副屏更小
 npm run test:ui               # 棋盘标签、切片清单完备性、会话往返、标签页规则、地址栏输入、分栏夹取、送去引擎的局面、复盘算分、双停终局
 npm run test:cv               # 棋盘识别：自己画几种风格的棋盘，看黑白子认不认得对
+npm run test:winhelper        # 助手脚本：那几段 PowerShell 真写成文件、真编译、真跑一遍（只读，不碰鼠标）
 npm run test:engine           # 真引擎复验：每一份局面 loadsgf 后盘面与行棋方都对得上
 node tools/gtp-selftest.mjs   # 真引擎链路：启动、loadsgf、落子、分析
 node tools/cv-check.mjs 图片 --answer 答案.sgf   # 图片识别的准确率回归
 ```
 
-规则引擎那份自测有 70 项断言，窗口 37 项，界面逻辑 536 项，棋盘识别 39 项，都能直接 `node tools/rules-selftest.mjs`、`node tools/window-state-selftest.mjs`、`node tools/ui-logic-selftest.mjs`、`node tools/cv-selftest.mjs` 跑。它们存在的理由很实在：这类错不会让类型检查报错，只会让程序悄悄下错棋、开出一个拖不动的窗口、关掉标签跳到别的页面上、把上一盘的评点扣到这一盘上、重启之后少开一盘棋、把一局棋存成两份、或者悄悄少认一半白子。`test:engine` 要开真引擎，二十多秒，所以不在 `npm test` 里。
+规则引擎那份自测有 70 项断言，窗口 37 项，界面逻辑 536 项，棋盘识别 39 项，助手脚本 19 项，都能直接 `node tools/rules-selftest.mjs`、`node tools/window-state-selftest.mjs`、`node tools/ui-logic-selftest.mjs`、`node tools/cv-selftest.mjs`、`node tools/winhelper-selftest.mjs` 跑。它们存在的理由很实在：这类错不会让类型检查报错，只会让程序悄悄下错棋、开出一个拖不动的窗口、关掉标签跳到别的页面上、把上一盘的评点扣到这一盘上、重启之后少开一盘棋、把一局棋存成两份、或者悄悄少认一半白子。最后那一套专盯那几段交给 PowerShell 现编现用的脚本：C# 里写错一个词、鼠标动作挪到守卫前面，类型检查与其它自测都看不见，它会真写文件、真编译、真跑一遍，只是不做需要屏幕的那一步。`test:engine` 要开真引擎，二十多秒，所以不在 `npm test` 里。
 
 跑起来的实例也能从外面看：`node tools/devtest.mjs --remote-debugging-port=9223` 起一个独立配置的验收实例，再用 `node tools/live-probe.mjs "<表达式>"` 在它的界面里求值，截图和点击见 `tools/cdp.mjs`。
 
@@ -261,7 +262,7 @@ KataGo 的 `loadsgf` 只认根节点上的摆子：第二个节点往后只要�
 
 真点这一下有守门：点之前先核对画面比例跟窗口现在的比例对不对得上（你正拖着窗口边缘改大小的时候，画面还是旧尺寸，这一拍就不点，下一拍重新认过再点），再核对那个屏幕像素点上最上面的是不是目标窗口（是不是目标进程的），不是就一个都不点，状态行会写明“那一点上盖着别的窗口”。点完把鼠标挪回原处，键盘焦点也还给你原来那个窗口。所以目标窗口被别的窗口完全压住的时候，它不会硬点。
 
-多屏、系统缩放、远程画面里的缩小显示都不影响落点：中间全靠比例换算，屏幕那一步交给系统。
+多屏、系统缩放、远程画面里的缩小显示都不影响落点：量窗口和搬鼠标都交给一个先把自己标成“每显示器 DPI 感知”的助手进程，量到的和点到的都是同一套物理像素，中间全靠比例换算，最后换算成界面坐标那一步交给系统。
 
 ## 操作
 

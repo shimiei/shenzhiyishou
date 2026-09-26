@@ -46,9 +46,33 @@ function pending(name, why) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 每次起 PowerShell 都在前面加这段：把自己标成每显示器 DPI 感知。
+ *
+ * powershell.exe 默认"不感知 DPI"，缩放不是 100% 的机器上，GetWindowRect、SetWindowPos、
+ * GetCursorPos 这一套给的是按缩放折过的虚拟像素。应用那边（windowHelper）已经标过了，
+ * 驱动这边要是按默认来，两边量的就不是同一套坐标，±2 像素的对照会平白无故地失败，
+ * 真点也会点歪。坐标一律按物理像素量，跟应用一致。
+ */
+const DPI_PRELUDE = `
+Add-Type @'
+using System;using System.Runtime.InteropServices;
+public class D {
+  [DllImport("user32.dll", SetLastError=true)] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
+  [DllImport("shcore.dll")] public static extern int SetProcessDpiAwareness(int a);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  public static void Go() {
+    try { SetProcessDpiAwarenessContext(new IntPtr(-4)); }
+    catch { try { SetProcessDpiAwareness(2); } catch { try { SetProcessDPIAware(); } catch {} } }
+  }
+}
+'@
+[D]::Go()
+`;
+
 /** 跑一段 PowerShell，回它吐出来的字。 */
 function ps(script) {
-  return execFileSync('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf8' }).trim();
+  return execFileSync('powershell', ['-NoProfile', '-Command', DPI_PRELUDE + script], { encoding: 'utf8' }).trim();
 }
 
 /** 屏幕上那一点最上面是哪个窗口，属于哪个进程。 */
@@ -405,6 +429,11 @@ const main = async () => {
   check('画面来源是"固定窗口"', base.src === 'window', `actual=${base.src}`);
   check('记住的是那个窗口', base.proc !== '' || base.title !== '', `proc=${base.proc} title=${base.title}`);
   check('读到目标窗口的位置', Boolean(win.win), JSON.stringify(win.win ?? null));
+  check(
+    '读窗口那个助手进程是每显示器 DPI 感知（坐标才不会混两套）',
+    win.dpi === 2,
+    `dpi=${win.dpi ?? null}`
+  );
   check(
     '客户区跟另读的那份对得上（±2 像素）',
     Boolean(win.client && self?.client) &&
