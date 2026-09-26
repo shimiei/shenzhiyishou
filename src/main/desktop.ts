@@ -314,7 +314,7 @@ export async function clickPoint(frame: FrameSize, point: { x: number; y: number
   if (!g.visible) return { ok: false, reason: '目标窗口不在屏幕上' };
   const region = pickFrameRect(frame, g.win, g.client);
   // 画面比跟窗口现在的比例对不上，说明窗口在这几帧里改过大小，按比例算出来的点会偏
-  if (!frameAspectMatches(frame, region.rect)) return { ok: false, reason: 'resized' };
+  if (!frameAspectMatches(frame, region.rect)) return { ok: false, reason: explain('resized') };
   const at = framePointToScreen(point, frame, region.rect);
   hideMark();
   const res = await clickAt(target.hwnd, ownerHwnd, at.x, at.y);
