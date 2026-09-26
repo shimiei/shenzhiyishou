@@ -682,6 +682,28 @@ textarea {
   border: 1px solid var(--border);
 }
 
+/* 这一颗是按钮：点一下就把先手换给对方 */
+button.turn-pill {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+button.turn-pill:hover {
+  border-color: var(--accent);
+}
+/* 手动指定的轮次：跟棋谱里数出来的轮次分开说 */
+.turn-pill.manual {
+  border-color: var(--accent);
+}
+.pill-tag {
+  font-size: 11px;
+  line-height: 15px;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #10202c;
+}
+
 .stone-dot {
   width: 11px;
   height: 11px;

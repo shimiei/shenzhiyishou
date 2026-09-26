@@ -31,6 +31,12 @@ export interface BoardSlice {
   filePath: string | null;
   dirty: boolean;
   hint: Advice | null;
+  /**
+   * 这一盘手动指定的行棋方，null 表示按棋谱数。
+   * 有手数的局面改轮次改不到棋谱里去（那个节点自己的着手会盖过 PL），所以改用这处界面开关：
+   * 落子、提示、实时分析、AI 走一手都认它。
+   */
+  turnOverride: 1 | 2 | null;
   game: GameConfig;
   /** 开“机机对局”之前是哪一档，关掉时回到这一档。 */
   autoReturn: 'manual' | 'vs-ai';
@@ -61,6 +67,7 @@ export const BOARD_KEYS = [
   'filePath',
   'dirty',
   'hint',
+  'turnOverride',
   'game',
   'autoReturn',
   'finished',
@@ -118,6 +125,7 @@ export function emptySlice(opts: { size?: number; komi?: number; game?: GameConf
     filePath: null,
     dirty: false,
     hint: null,
+    turnOverride: null,
     game: { ...(opts.game ?? DEFAULT_GAME) },
     autoReturn: 'manual',
     finished: null,

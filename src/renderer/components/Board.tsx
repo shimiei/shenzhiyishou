@@ -33,6 +33,10 @@ interface BoardProps {
   clickable?: boolean;
   /** 手里拿的是哪件工具。悬停预览按它画：落子画子、摆子画选的颜色、标记画标记。 */
   tool?: Tool;
+  /** 这一手轮到的颜色（算上手动指定的轮次）。落子预览按它画幽灵子。 */
+  turnColor?: 1 | 2;
+  /** "自由落子"手里选的那个颜色，预览要跟它一致。 */
+  freeColor?: 1 | 2;
   /** 字母工具预览用的字母：下一个会落下的那个，由外面按当前节点算好传进来。 */
   previewLabel?: string;
   onPlay?: (point: number) => void;
@@ -207,6 +211,8 @@ export function Board({
   interactive = true,
   clickable = true,
   tool = 'play',
+  turnColor,
+  freeColor,
   previewLabel,
   onPlay,
   onHover,
@@ -539,9 +545,13 @@ export function Board({
         ctx.globalAlpha = 1;
       };
       if (tool === 'play') {
-        const legal = !occupied && position.isLegal((3 - position.toPlay) as 1 | 2, hover);
-        if (legal) ghost(position.toPlay as Stone);
+        // 轮次可以被手动指定，所以预览的颜色用外面传进来的那个，不认 position.toPlay
+        const color = turnColor ?? position.toPlay;
+        const legal = !occupied && position.isLegal((3 - color) as 1 | 2, hover);
+        if (legal) ghost(color as Stone);
         else redCross(ctx, cx, cy, step);
+      } else if (tool === 'free') {
+        ghost(freeColor ?? BLACK);
       } else if (tool === 'black' || tool === 'white') {
         // 摆子：预览跟手里选的颜色走，不跟手数。压在已有的子上就是替换，照样画。
         ghost(tool === 'black' ? BLACK : WHITE);
@@ -583,7 +593,9 @@ export function Board({
     interactive,
     tool,
     previewLabel,
-    preview
+    preview,
+    turnColor,
+    freeColor
   ]);
 
   const locate = (clientX: number, clientY: number): number | null => {

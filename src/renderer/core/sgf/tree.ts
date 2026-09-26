@@ -249,6 +249,17 @@ export function colorToPlayAt(tree: GameTree, id: number): 1 | 2 {
 }
 
 /**
+ * 这一手到底谁走：界面手动指定过就按指定的，否则按棋谱数。
+ *
+ * 手动指定只在这盘棋的界面里算数，不写进棋谱文件：棋谱该怎么记还怎么记，
+ * 送出去给别人看的时候不会夹带一份"人为的轮次"。落子、提示、实时分析、
+ * AI 走一手都从这里取颜色，四处才不会各说各话。
+ */
+export function turnWithOverride(tree: GameTree, id: number, override: 1 | 2 | null): 1 | 2 {
+  return override ?? colorToPlayAt(tree, id);
+}
+
+/**
  * 走到这里是不是"双方连续停一手"，也就是对局到头的信号。
  * 摆子节点不算手数，所以只看路径末尾两手的实际落子；只有一手棋、或者末尾不是两手停，都不算。
  */

@@ -44,7 +44,8 @@ import {
   positionKey,
   propNum,
   setProp,
-  setTurnAt
+  setTurnAt,
+  turnWithOverride
 } from '../src/renderer/core/sgf/tree';
 import {
   BOARD_KEYS,
@@ -732,6 +733,26 @@ section('轮次：摆子局面能改，有手数就改不了');
   const ha = createTree(19, 7.5, 4, 'Chinese');
   eq(colorToPlayAt(ha, ha.root), WHITE, '让子局面按惯例白先');
   eq(colorToPlayAt(setTurnAt(ha, ha.root, BLACK), ha.root), BLACK, '写死 PL 之后听 PL 的');
+}
+
+section('轮次：手动指定压得过棋谱，但不写进棋谱');
+{
+  const base = createTree(19, 7.5, 0, 'Chinese');
+  const moved = addMoveNode(base, base.root, BLACK, 60, { mainLine: true });
+  const t = moved.tree;
+  // 黑刚落完，按棋谱该白走
+  eq(colorToPlayAt(t, moved.id), WHITE, '有手数的局面，轮次由手数定');
+  eq(turnWithOverride(t, moved.id, null), WHITE, '没指定过就听棋谱的');
+  eq(turnWithOverride(t, moved.id, BLACK), BLACK, '指定过就听指定的：黑可以连走两手');
+  eq(turnWithOverride(t, moved.id, WHITE), WHITE, '指定白也行');
+  ok(!serializeSgf(t).includes('PL['), '手动指定没有偷偷写一个 PL 进棋谱');
+  /*
+   * 节点自己的着手会盖过同一个节点上的 PL，这就是"有手数时改不了轮次"的根子：
+   * 想改只能走手动指定那条路。
+   */
+  const withPl = setTurnAt(t, moved.id, BLACK);
+  eq(turnWithOverride(withPl, moved.id, null), WHITE, '节点自己的着手盖过 PL');
+  eq(turnWithOverride(withPl, moved.id, BLACK), BLACK, '手动指定照样压得住');
 }
 
 section('推荐作废：盘面一变，旧提示不能再留着');

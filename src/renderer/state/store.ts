@@ -32,6 +32,7 @@ import {
   propNum,
   setProp,
   setTurnAt,
+  turnWithOverride,
   type Mark,
   type MarkType
 } from '../core/sgf/tree';
@@ -88,7 +89,17 @@ import {
   type SplitAxis
 } from '../core/layout/panes';
 
-export type Tool = 'play' | 'black' | 'white' | 'erase' | 'triangle' | 'square' | 'circle' | 'cross' | 'label';
+export type Tool =
+  | 'play'
+  | 'free'
+  | 'black'
+  | 'white'
+  | 'erase'
+  | 'triangle'
+  | 'square'
+  | 'circle'
+  | 'cross'
+  | 'label';
 export type DialogName =
   | 'settings'
   | 'about'
@@ -126,6 +137,8 @@ interface AppStore {
   future: GameTree[];
   filePath: string | null;
   dirty: boolean;
+  /** 这一盘手动指定的行棋方（跟着这一盘走，见 core/boards 的 BoardSlice）。 */
+  turnOverride: 1 | 2 | null;
 
   /**
    * 打开着的几盘棋，像浏览器的标签页。顺序就是标签条上的顺序。
@@ -140,6 +153,8 @@ interface AppStore {
   closedBoards: BoardTab[];
 
   tool: Tool;
+  /** "自由落子"用哪个颜色落。跟着工具走的一件小事，不属于某一盘棋。 */
+  freeColor: 1 | 2;
   hover: number | null;
   cursor: number | null;
   /** 是否在棋盘上铺形势判断的热力块，默认关，免得挡住棋子。 */
@@ -241,12 +256,15 @@ interface AppStore {
   /** 候选点面板点一下，把它当推荐画到棋盘上。 */
   pickCandidate: (move: string, winrate: number, scoreLead: number) => void;
   setTurn: (color: 1 | 2) => void;
+  /** 状态栏那颗"轮到谁"：点一下改成对方先走，再点一下回到按棋谱走。 */
+  toggleTurn: () => void;
   resign: () => void;
 
   newGame: (opts: Partial<GameConfig> & { size?: number; komi?: number; handicap?: number; rules?: string }) => void;
   loadSgf: (content: string, path?: string) => void;
   importPosition: (stones: number[], size: number, asNew: boolean) => void;
   setTool: (t: Tool) => void;
+  setFreeColor: (color: 1 | 2) => void;
   setShowOwnership: (v: boolean) => void;
   setHover: (p: number | null) => void;
   setSetupStone: (point: number, color: Stone) => void;
@@ -344,9 +362,17 @@ const emptyStatus: EngineStatus = {
 };
 
 /** 引擎要的局面：摆子得收进根节点、轮次要写死，见 core/sgf/engineSgf.ts。 */
-function sgfFor(tree: GameTree, node: number): string {
-  const color = colorToPlayAt(tree, node) === BLACK ? 'B' : 'W';
+function sgfFor(tree: GameTree, node: number, override: 1 | 2 | null = null): string {
+  const color = turnWithOverride(tree, node, override) === BLACK ? 'B' : 'W';
   return engineSgfFor(tree, node, color).sgf;
+}
+
+/**
+ * 这一盘此刻轮到谁：手动指定过就按指定的，否则按棋谱数。
+ * 传整份状态或者某个切片都行，两边的字段名一样。
+ */
+function effColor(src: { tree: GameTree; current: number; turnOverride: 1 | 2 | null }): 1 | 2 {
+  return turnWithOverride(src.tree, src.current, src.turnOverride);
 }
 
 const emptyReviewSummary: ReviewSummary = {
@@ -538,6 +564,7 @@ export const useStore = create<AppStore>((set, get) => ({
   pendingClose: null,
 
   tool: 'play',
+  freeColor: BLACK,
   hover: null,
   cursor: null,
 
@@ -957,9 +984,8 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   play(point) {
-    const { tree, current } = get();
-    const color = colorToPlayAt(tree, current);
-    get().playColor(color, point);
+    // 手动指定过轮次就按指定的颜色落，不再按棋谱交替
+    get().playColor(effColor(get()), point);
   },
 
   playColor(color, point, from = 'local') {
@@ -993,7 +1019,7 @@ export const useStore = create<AppStore>((set, get) => ({
 
   pass() {
     const { tree, current } = get();
-    const color = colorToPlayAt(tree, current);
+    const color = effColor(get());
     const res = addMoveNode(tree, current, color, PASS, { mainLine: true, source: 'human' });
     get().commit(res.tree, res.id);
     // 连续两停，终局
@@ -1020,7 +1046,7 @@ export const useStore = create<AppStore>((set, get) => ({
       get().toast('引擎正为另一盘算棋，等它算完这一手再说', 'info');
       return null;
     }
-    const color = colorToPlayAt(tree, current);
+    const color = effColor(slice);
     const aiColor = (3 - game.humanColor) as 1 | 2;
     if (!force && color !== aiColor && game.mode !== 'ai-vs-ai') return null;
     const nodeAtRequest = current;
@@ -1028,7 +1054,7 @@ export const useStore = create<AppStore>((set, get) => ({
     try {
       const res = await window.api.engine.genMove({
         board: id,
-        sgf: sgfFor(tree, current),
+        sgf: sgfFor(tree, current, slice.turnOverride),
         color: color === BLACK ? 'B' : 'W',
         maxVisits: game.visits,
         maxTimeMs: game.timeMs,
@@ -1080,8 +1106,7 @@ export const useStore = create<AppStore>((set, get) => ({
       get().toast('这盘已经结束了', 'info');
       return;
     }
-    const { tree, current } = get();
-    const color = colorToPlayAt(tree, current);
+    const color = effColor(get());
     if (get().thinkingBoard === get().activeBoard) return;
     set({ hint: null });
     const move = await get().playAiMove(true);
@@ -1173,7 +1198,7 @@ export const useStore = create<AppStore>((set, get) => ({
       void get().playAiMove(false, id);
       return;
     }
-    const color = colorToPlayAt(tree, current);
+    const color = effColor(slice);
     const aiColor = (3 - game.humanColor) as 1 | 2;
     if (color === aiColor) void get().playAiMove(false, id);
   },
@@ -1192,12 +1217,12 @@ export const useStore = create<AppStore>((set, get) => ({
       get().toast('引擎正为另一盘算棋，等它算完这一手再说', 'info');
       return;
     }
-    const color = colorToPlayAt(tree, current);
+    const color = effColor(slice);
     get().setThinking(true, board);
     try {
       const { settings } = get();
       const res = await window.api.engine.hint(
-        sgfFor(tree, current),
+        sgfFor(tree, current, slice.turnOverride),
         settings.analyzeVisits,
         color === BLACK ? 'B' : 'W',
         // 提示也要带时限：大网络上一手提示跑几十秒会让人以为卡住。用每步限时那一档。
@@ -1232,13 +1257,13 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   pickCandidate(move, winrate, scoreLead) {
-    const { tree, current, analysis } = get();
+    const { current, analysis } = get();
     /*
      * 面板上那几行可能还是上一个局面的（刚落下新的一手、新的还没算出来）。
      * 那上面推荐的点在这个局面上未必成立，索性不接这一下，免得画个错的推荐圈。
      */
     if (analysis && analysis.nodeId >= 0 && analysis.nodeId !== current) return;
-    set({ hint: { color: colorToPlayAt(tree, current), move, winrate, scoreLead } });
+    set({ hint: { color: effColor(get()), move, winrate, scoreLead } });
   },
 
   /** 导入的图、自己摆的局面，程序不知道轮到谁，这里手改。有手数时改不了，会说明原因。 */
@@ -1255,9 +1280,32 @@ export const useStore = create<AppStore>((set, get) => ({
     get().toast(`已改为${colorName(color)}方先行`, 'success');
   },
 
+  /**
+   * 状态栏那颗"轮到谁"。两种情形两条路：
+   * 还没有手数的局面（导入的图、自己摆的开局）轮次本来就没定，直接写进棋谱里的 PL，
+   * 存盘和送引擎都认它；已经有手数的局面改不到棋谱里（那个节点自己的着手会盖过 PL），
+   * 就退成这一盘界面上的手动指定，只在这盘有效。
+   */
+  toggleTurn() {
+    const { tree, current } = get();
+    const record = colorToPlayAt(tree, current);
+    const other = (3 - record) as 1 | 2;
+    if (get().turnOverride === null) {
+      if (canSetTurn(tree, current).ok) {
+        get().setTurn(other);
+        return;
+      }
+      get().patchBoard(get().activeBoard, { turnOverride: other, hint: null });
+      get().toast(`这一盘改由${colorName(other)}方走。只在这盘有效，不写进棋谱`, 'success');
+      return;
+    }
+    get().patchBoard(get().activeBoard, { turnOverride: null, hint: null });
+    get().toast(`轮次回到按棋谱走：${colorName(record)}方`, 'info');
+  },
+
   resign() {
     const { tree, current, game } = get();
-    const color = colorToPlayAt(tree, current);
+    const color = effColor(get());
     void game;
     const winner = color === BLACK ? 'W' : 'B';
     const winnerName = winner === 'B' ? '黑' : '白';
@@ -1289,6 +1337,8 @@ export const useStore = create<AppStore>((set, get) => ({
       finished: null,
       deadStones: [],
       hint: null,
+      // 换了一盘棋，上一盘手动指定的轮次不能跟过来
+      turnOverride: null,
       game: { ...get().game, ...opts, humanColor },
       autoReturn: 'manual'
     });
@@ -1315,6 +1365,7 @@ export const useStore = create<AppStore>((set, get) => ({
         analyzing: false,
         finished: null,
         deadStones: [],
+        turnOverride: null,
         game: { ...get().game, mode: 'manual' },
         autoReturn: 'manual'
       });
@@ -1354,6 +1405,7 @@ export const useStore = create<AppStore>((set, get) => ({
         analyzing: false,
         finished: null,
         deadStones: [],
+        turnOverride: null,
         game: { ...get().game, mode: 'manual' },
         autoReturn: 'manual'
       });
@@ -1390,7 +1442,15 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   setTool(t) {
-    set({ tool: t });
+    /*
+     * 每次拿起"自由落子"，颜色先跟着当前轮到的那一方：这样它一上来跟"落子"一模一样，
+     * 想改再改颜色。否则手里拿着黑子、盘上轮到白，点下去落一颗黑子太容易没注意。
+     */
+    set(t === 'free' ? { tool: t, freeColor: effColor(get()) } : { tool: t });
+  },
+
+  setFreeColor(color) {
+    set({ freeColor: color });
   },
 
   setShowOwnership(v) {
@@ -1553,7 +1613,8 @@ export const useStore = create<AppStore>((set, get) => ({
     const { tree, current, settings, analyzing } = get();
     // 已经在跑、或者上一次刚发出去还没回来（冷启动那十几秒里连点两下），就别再发一次
     if ((analyzing || get().analyzeStarting) && !force) return;
-    const color = colorToPlayAt(tree, current);
+    // 分析只给当前这一盘开，所以手动指定的轮次（也是当前这盘的）直接用
+    const color = effColor(get());
     /*
      * 记下这是给哪一盘要的分析：算出来的时候用户可能已经切到别的盘上去了，
      * 结论要落回它自己那一盘，不能画到当前这盘上。
@@ -1579,7 +1640,7 @@ export const useStore = create<AppStore>((set, get) => ({
       }
       const res = await window.api.engine.analyzeStart({
         board,
-        sgf: sgfFor(tree, current),
+        sgf: sgfFor(tree, current, get().turnOverride),
         visits: settings.analyzeVisits,
         maxTimeMs: 0,
         ownership: true,
@@ -1678,6 +1739,10 @@ export const useStore = create<AppStore>((set, get) => ({
     const positions: Array<{ nodeId: number; sgf: string; turn: 'B' | 'W'; ply: number }> = [];
     for (let i = 0; i < path.length; i++) {
       const id = path[i];
+      /*
+       * 复盘看的是这盘棋本身，一手一手按棋谱数轮次：手动指定的轮次不能进来，
+       * 否则从根上换一次颜色，整局的评点会全部颠倒。
+       */
       const turn = colorToPlayAt(tree, id) === BLACK ? 'B' : 'W';
       const { sgf } = engineSgfFor(tree, id, turn);
       positions.push({ nodeId: id, sgf, turn, ply: i });
@@ -1957,7 +2022,7 @@ export const useStore = create<AppStore>((set, get) => ({
         return;
       }
       const cur = now.current;
-      const plan = planMirror(size, positionAt(now.tree, cur).cells, colorToPlayAt(now.tree, cur), shot.stones);
+      const plan = planMirror(size, positionAt(now.tree, cur).cells, now.turnOverride ?? colorToPlayAt(now.tree, cur), shot.stones);
       if (plan.kind === 'same') {
         setSync('和网页一致', true);
         return;
@@ -2018,7 +2083,12 @@ export const useStore = create<AppStore>((set, get) => ({
       }
       // 点之前先确认网页还停在"这一手之前"：两边对不上说明用户在网页上看的是
       // 另一盘棋，这一下点下去就是往别人的棋盘上落子。
-      const plan = planMirror(size, positionAt(st.tree, parentId).cells, colorToPlayAt(st.tree, parentId), before.stones);
+      const plan = planMirror(
+        size,
+        positionAt(st.tree, parentId).cells,
+        st.turnOverride ?? colorToPlayAt(st.tree, parentId),
+        before.stones
+      );
       if (plan.kind !== 'same') {
         setSync(
           plan.kind === 'move'

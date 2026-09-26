@@ -1,5 +1,5 @@
 import { useThinking, useStore } from '../state/store';
-import { canSetTurn, colorToPlayAt, moveNumberAt, positionAt, propNum } from '../core/sgf/tree';
+import { canSetTurn, moveNumberAt, positionAt, propNum, turnWithOverride } from '../core/sgf/tree';
 import { adviceChip, colorName } from '../core/advice';
 import { BLACK } from '../../shared/types';
 
@@ -14,16 +14,17 @@ export function StatusBar(): React.ReactElement {
   const toggleAiVsAi = useStore((s) => s.toggleAiVsAi);
   const hint = useStore((s) => s.hint);
   const setHint = useStore((s) => s.setHint);
-  const setTurn = useStore((s) => s.setTurn);
+  const toggleTurn = useStore((s) => s.toggleTurn);
+  const turnOverride = useStore((s) => s.turnOverride);
 
   const size = propNum(tree, tree.root, 'SZ', 19);
   const komi = propNum(tree, tree.root, 'KM', 7.5);
   const handicap = propNum(tree, tree.root, 'HA', 0);
-  const turn = colorToPlayAt(tree, current);
+  const turn = turnWithOverride(tree, current, turnOverride);
   const moveNo = moveNumberAt(tree, current);
   const pos = positionAt(tree, current);
-  // 摆子的局面没有手数，程序不知道轮到谁，得让用户说；有手数时轮次由手数定
-  const turnIsManual = canSetTurn(tree, current).ok;
+  // 摆子的局面没有手数，轮次本来就没定，改起来是直接写棋盘上的 PL（保存、送引擎都认）
+  const turnWritable = canSetTurn(tree, current).ok;
 
   const modeText =
     game.mode === 'vs-ai'
@@ -37,22 +38,21 @@ export function StatusBar(): React.ReactElement {
   return (
     <div className="statusbar">
       <span className="item">
-        <span className="turn-pill">
+        {/* 这一颗能点：点一下改成对方先走，落子、提示、分析、AI 都跟着走 */}
+        <button
+          className={'turn-pill clickable' + (turnOverride === null ? '' : ' manual')}
+          onClick={toggleTurn}
+          title={
+            turnWritable
+              ? '点一下改成对方先走。这盘还没有手数，轮次直接写进棋谱，存盘也认'
+              : '点一下改成对方先走：落子、提示、实时分析、AI 走一手都跟着这个颜色。只在这盘有效，不写进棋谱'
+          }
+        >
           <span className={'stone-dot ' + (turn === BLACK ? 'black' : 'white')} />
           {colorName(turn)}方行棋
-        </span>
+          {turnOverride === null ? null : <span className="pill-tag">手动</span>}
+        </button>
       </span>
-      {turnIsManual ? (
-        <span className="item">
-          <button
-            className="chip"
-            onClick={() => setTurn((3 - turn) as 1 | 2)}
-            title="这一局还没有手数，程序按惯例猜的黑先。点一下改成对方先走。"
-          >
-            换先手
-          </button>
-        </span>
-      ) : null}
       {hint ? (
         <span className="item">
           <button className="chip active" onClick={() => setHint(null)} title="给现在轮到这一方的一手推荐，点一下清掉；按 H 重新算">

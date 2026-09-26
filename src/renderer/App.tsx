@@ -12,7 +12,16 @@ import { ImageImportDialog } from './components/ImageImport';
 import { DialogsHost } from './components/Dialogs';
 import { Board, type Candidate } from './components/Board';
 import { useShortcuts } from './hooks/useShortcuts';
-import { infoFromTree, marksAt, moveAtSized, moveNumberAt, pathTo, positionAt, propNum } from './core/sgf/tree';
+import {
+  infoFromTree,
+  marksAt,
+  moveAtSized,
+  moveNumberAt,
+  pathTo,
+  positionAt,
+  propNum,
+  turnWithOverride
+} from './core/sgf/tree';
 import { serializeSgf } from './core/sgf/serialize';
 import { nextLabel } from './core/sgf/codec';
 import {
@@ -68,6 +77,9 @@ export function App(): React.ReactElement {
   const hint = useStore((s) => s.hint);
   const tool = useStore((s) => s.tool);
   const setTool = useStore((s) => s.setTool);
+  const freeColor = useStore((s) => s.freeColor);
+  const setFreeColor = useStore((s) => s.setFreeColor);
+  const turnOverride = useStore((s) => s.turnOverride);
   const thinking = useThinking();
   const wsRef = useRef<HTMLDivElement | null>(null);
 
@@ -441,9 +453,14 @@ export function App(): React.ReactElement {
   const previewLabel =
     tool === 'label' ? nextLabel(tree.nodes[current]?.props.LB ?? []) : undefined;
 
+  // 这一手轮到谁：手动指定过就按指定的。落子预览、状态栏、提示都看它
+  const turnColor = turnWithOverride(tree, current, turnOverride);
+
   const boardClick = (point: number): void => {
     const s = useStore.getState();
     if (tool === 'play') s.play(point);
+    // 自由落子：颜色由手里这个选择定，不按手数交替，但它是真正的一手棋（占手数、能悔棋）
+    else if (tool === 'free') s.playColor(freeColor, point);
     else if (tool === 'black') s.setSetupStone(point, BLACK);
     else if (tool === 'white') s.setSetupStone(point, 2);
     else if (tool === 'erase') s.setSetupStone(point, 0);
@@ -494,6 +511,7 @@ export function App(): React.ReactElement {
                   {(
                     [
                       ['play', '落子'],
+                      ['free', '自由落子'],
                       ['black', '放黑子'],
                       ['white', '放白子'],
                       ['erase', '拿掉子'],
@@ -504,11 +522,42 @@ export function App(): React.ReactElement {
                       ['label', '字母']
                     ] as Array<[typeof tool, string]>
                   ).map(([t, label]) => (
-                    <button key={t} className={'seg-item' + (tool === t ? ' active' : '')} onClick={() => setTool(t)}>
+                    <button
+                      key={t}
+                      className={'seg-item' + (tool === t ? ' active' : '')}
+                      onClick={() => setTool(t)}
+                      title={
+                        t === 'play'
+                          ? '按棋谱轮流落子：这一手该谁走就落谁的颜色'
+                          : t === 'free'
+                            ? '自由落子：下一手落哪个颜色由你定，黑白不再轮流。是真的一手棋（占手数、能悔棋），补一手、照着书录棋都行'
+                            : t === 'black' || t === 'white'
+                              ? '摆子：只把这个颜色的子摆在盘上，不占手数。摆局面、改局面用它'
+                              : t === 'erase'
+                                ? '把这一点上的子拿掉，不占手数'
+                                : '标记：点在子或空点上，不改动棋子'
+                      }
+                    >
                       {label}
                     </button>
                   ))}
                 </div>
+                {tool === 'free' ? (
+                  <div className="seg" title="自由落子要落的颜色">
+                    <button
+                      className={'seg-item' + (freeColor === BLACK ? ' active' : '')}
+                      onClick={() => setFreeColor(BLACK)}
+                    >
+                      <span className="stone-dot black" />黑
+                    </button>
+                    <button
+                      className={'seg-item' + (freeColor === BLACK ? '' : ' active')}
+                      onClick={() => setFreeColor(2)}
+                    >
+                      <span className="stone-dot white" />白
+                    </button>
+                  </div>
+                ) : null}
                 <div className="spacer" />
                 {thinking ? <span className="badge warn">引擎思考中…</span> : null}
                 <span className="small faint">{hover !== null ? coordText(hover, size) : ''}</span>
@@ -529,6 +578,8 @@ export function App(): React.ReactElement {
                 numbers={numbers}
                 zoom={zoom}
                 tool={tool}
+                turnColor={turnColor}
+                freeColor={freeColor}
                 previewLabel={previewLabel}
                 onHover={setHover}
                 onPlay={boardClick}
