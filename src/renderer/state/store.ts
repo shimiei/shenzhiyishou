@@ -2239,9 +2239,15 @@ export const useStore = create<AppStore>((set, get) => ({
         before.stones
       );
       if (plan.kind !== 'same') {
+        /*
+         * "网页上已经有这一手了"多半不是错，是本地还落后对手那一手：实时截取还没把它接回来，
+         * 用户就抢在下面前落子了。所以这句提示要说清接下来该怎么办，而不是只说对不上。
+         */
         setSync(
           plan.kind === 'move'
-            ? `自动落子：网页上已经有 ${Position.gtpVertex(plan.point, size)} 这一手了`
+            ? `自动落子：网页上已经有 ${Position.gtpVertex(plan.point, size)} 这一手了（本地还没接上），${
+                get().settings.liveCapture ? '等它接回来再下这一手' : '打开实时截取才会接回来'
+              }`
             : `自动落子：网页棋盘跟这盘对不上（网页上多 ${plan.missing} 颗，本地多 ${plan.extra} 颗），没点`,
           false
         );
