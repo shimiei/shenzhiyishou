@@ -20,6 +20,13 @@ if (!existsSync(asar)) {
   process.exit(1);
 }
 
+// 验收目录第一次用（或者整份被删掉）时，先把打好的这份原样搬过去；之后只换 app 与引擎、网络
+if (!existsSync(join(dest, '神之一手.exe'))) {
+  rmSync(dest, { recursive: true, force: true });
+  mkdirSync(dirname(dest), { recursive: true });
+  cpSync(unpacked, dest, { recursive: true });
+}
+
 rmSync(stage, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 // Windows 上 .cmd 不能直接 execFile，得经 cmd.exe；asar 的 bin 是 node 脚本
@@ -45,6 +52,18 @@ writeFileSync(main, patched, 'utf8');
 // 只换 app 目录，外面的 exe、dll、引擎、网络原样不动
 rmSync(join(dest, 'resources', 'app'), { recursive: true, force: true });
 cpSync(stage, join(dest, 'resources', 'app'), { recursive: true });
+
+// Electron 先认 app.asar、其次才认 app 目录，所以那份旧的 asar 必须挪走，
+// 否则上面改过的 main 根本没被加载：用户目录还是正式那一个（单实例锁会踢人），
+// 跑起来的是上一版的代码。第一次踩到就是验收跑完才发现量的全是旧版本。
+for (const stale of ['app.asar', 'app.asar.unpacked']) {
+  rmSync(join(dest, 'resources', stale), { recursive: true, force: true });
+}
+if (existsSync(join(dest, 'resources', 'app.asar'))) {
+  console.error('resources/app.asar 还在，副本会去加载旧代码，别再往下跑');
+  process.exit(1);
+}
+
 for (const dir of ['engine', 'models']) {
   const from = join(unpacked, 'resources', dir);
   if (existsSync(from)) {
@@ -52,5 +71,12 @@ for (const dir of ['engine', 'models']) {
     cpSync(from, join(dest, 'resources', dir), { recursive: true });
   }
 }
+// exe 本身也带着版本号与图标，顺手换成刚打出来的那份；副本正开着时换不动，说一声就行
+try {
+  cpSync(join(unpacked, '神之一手.exe'), join(dest, '神之一手.exe'));
+} catch {
+  console.warn('副本正开着，exe 没能换（程序代码已经是最新的，只是文件属性里那份版本号还旧）');
+}
+
 rmSync(stage, { recursive: true, force: true });
 console.log('验收副本已更新：' + dest);

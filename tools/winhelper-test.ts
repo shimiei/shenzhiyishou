@@ -17,11 +17,18 @@ import { CLICK_SCRIPT, LIST_SCRIPT, WATCH_SCRIPT, writeWinScripts } from '../src
 
 let passed = 0;
 let failed = 0;
+let pendingCount = 0;
 
 function check(name: string, ok: boolean, extra = ''): void {
   if (ok) passed++;
   else failed++;
   console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${extra ? '  ' + extra : ''}`);
+}
+
+/** 要"屏幕上没别的东西在动"才量得准的项：这会儿量不了就记成待验，不判失败。 */
+function pending(name: string, why: string): void {
+  pendingCount++;
+  console.log(`  待验 ${name}  ${why}`);
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -179,7 +186,16 @@ $p = New-Object W.C2+P
 [void][W.C2]::GetCursorPos([ref]$p)
 "" + $p.x + "," + $p.y
 `], { encoding: 'utf8' }).trim();
-  const cursorBefore = readCursor();
+  // 这一项量的是"拒点的时候连光标都没被搬动"，也就是个差值。可它没法排除别人在动鼠标：
+  // 用户这会儿正用着鼠标、或者远程桌面在推，前后两次读数就必然不一样，看着像功能坏了。
+  // 所以先连采三次看它自己稳不稳，稳了才拿它当基准；不稳就把这一项记成待验。
+  const taken: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    if (i > 0) await sleep(150);
+    taken.push(readCursor());
+  }
+  const stillBefore = taken.every((s) => s === taken[0]);
+  const cursorBefore = taken[taken.length - 1];
   const desktop = execFileSync('powershell', ['-NoProfile', '-Command', `
 Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetDesktopWindow();' -Name D3 -Namespace W
 [W.D3]::GetDesktopWindow().ToInt64()
@@ -192,9 +208,19 @@ Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern IntPt
   check('算出来的点在客户区外面就报 outside', outside.ok === false && outside.reason === 'outside', JSON.stringify(outside));
 
   const cursorAfter = readCursor();
-  check('两次拒点之后光标一个像素都没动', cursorAfter === cursorBefore, `${cursorBefore} -> ${cursorAfter}`);
+  await sleep(150);
+  const cursorAfter2 = readCursor();
+  const stillAfter = cursorAfter === cursorAfter2;
+  if (!stillBefore || !stillAfter) {
+    pending(
+      '两次拒点之后光标一个像素都没动',
+      `鼠标这会儿正被别的什么东西动着（${cursorBefore} -> ${cursorAfter} -> ${cursorAfter2}），手停下来再跑一遍`
+    );
+  } else {
+    check('两次拒点之后光标一个像素都没动', cursorAfter === cursorBefore, `${cursorBefore} -> ${cursorAfter}`);
+  }
 }
 
 rmSync(dir, { recursive: true, force: true });
-console.log(`\n助手脚本自测：${passed} 项通过，${failed} 项失败`);
+console.log(`\n助手脚本自测：${passed} 项通过，${failed} 项失败${pendingCount ? `，${pendingCount} 项待验` : ''}`);
 process.exit(failed === 0 ? 0 : 1);
