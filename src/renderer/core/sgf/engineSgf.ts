@@ -1,6 +1,7 @@
 import { BLACK, WHITE, type GameTree, type SgfProps } from '../../../shared/types';
 import { Position } from '../go/position';
 import { expandRectValues, toSgfPoint } from './codec';
+import { SOURCE_PROP } from './tree';
 import { deepCopyProps, parseSgf } from './parse';
 import { writeProps } from './serialize';
 import { pathTo, positionAt } from './tree';
@@ -61,6 +62,11 @@ function mainLine(tree: GameTree, path: number[], turn: 'B' | 'W'): string {
         // 轮次只由根节点决定，中间节点里的 PL 留着只会跟引擎的理解打架
         delete props.PL;
       }
+      /*
+       * 自己加的那些属性（比如标记这一手是人还是机器下的）跟棋本身无关，
+       * 送去引擎之前摘掉：引擎对不认识的属性一般是忽略，但没必要去赌它的脾气。
+       */
+      delete props[SOURCE_PROP];
       return ';' + writeProps(props);
     })
     .filter((text, i) => i === 0 || text !== ';')
@@ -88,6 +94,7 @@ function hoistSetup(tree: GameTree, path: number[], turn: 'B' | 'W'): string | n
   rootProps.AB = points.filter((v) => color.get(v) === BLACK);
   rootProps.AW = points.filter((v) => color.get(v) === WHITE);
   delete rootProps.AE;
+  delete rootProps[SOURCE_PROP];
   rootProps.PL = [turn];
   const prefix = rootId === tree.root ? '' : ';';
   const chain = path
@@ -98,6 +105,7 @@ function hoistSetup(tree: GameTree, path: number[], turn: 'B' | 'W'): string | n
       delete props.AW;
       delete props.AE;
       delete props.PL;
+      delete props[SOURCE_PROP];
       return ';' + writeProps(props);
     })
     .filter((text, i) => i === 0 || text !== ';')
@@ -116,7 +124,7 @@ function positionOnlySgf(tree: GameTree, endId: number, turn: 'B' | 'W'): string
     else if (pos.cells[i] === WHITE) aw.push(toSgfPoint(i % size, Math.floor(i / size)));
   }
   const props = deepCopyProps(tree.nodes[tree.root]?.props ?? {});
-  for (const key of ['AB', 'AW', 'AE', 'HA', 'PL', 'B', 'W']) delete props[key];
+  for (const key of ['AB', 'AW', 'AE', 'HA', 'PL', 'B', 'W', SOURCE_PROP]) delete props[key];
   props.SZ = [String(size)];
   if (ab.length > 0) props.AB = ab;
   if (aw.length > 0) props.AW = aw;

@@ -6,7 +6,7 @@ import { GtpEngine } from './gtp';
 import { modelDef, modelDefByFile, modelPath } from './models';
 import { availableBackends, backendDir, engineConfig, katagoBinary, logsDir, tmpDir } from './paths';
 import type { AnalysisMove, AnalysisSnapshot, AppSettings, BackendName, EngineStatus } from '../shared/types';
-import type { AnalyzeRequest, BenchmarkResult, EngineEvent, GenMoveRequest, GenMoveResult } from '../shared/protocol';
+import type { AnalyzeRequest, BenchmarkResult, EngineEvent, GenMoveRequest, GenMoveResult, ReviewPointWire, ReviewRequest } from '../shared/protocol';
 
 const INFO_KEYS = new Set([
   'move',
@@ -114,6 +114,8 @@ export class EngineManager {
   };
   private synced = new Map<GtpEngine, string>();
   private analysis: { turn: 'B' | 'W'; nodeId: number; stop: (() => void) | null } | null = null;
+  /** 正在跑的复盘。它和分析共用分析引擎，所以两者互相挤。 */
+  private reviewCtl: { stop: (reason: 'cancelled' | 'replaced') => void } | null = null;
   private tempSgf = '';
   private settings: Partial<AppSettings> = {};
   private starting: Promise<EngineStatus> | null = null;
@@ -291,6 +293,7 @@ export class EngineManager {
   }
 
   async stop(): Promise<void> {
+    this.stopReview('cancelled');
     await this.playEngine.quit();
     await this.analyzeEngine.quit();
     this.playTarget = null;
@@ -478,6 +481,8 @@ export class EngineManager {
 
   async analyze(req: AnalyzeRequest): Promise<{ ok: boolean; error?: string }> {
     this.stopAnalysis();
+    // 实时分析和复盘抢同一个分析引擎，用户开始看当前局面，复盘就让位（已算完的留着）
+    this.stopReview('replaced');
     let engine: GtpEngine;
     try {
       engine = await this.ensureAnalyze();
@@ -605,6 +610,190 @@ export class EngineManager {
   stopAnalysis(): void {
     if (this.analysis?.stop) this.analysis.stop();
     this.analysis = null;
+  }
+
+  /**
+   * 复盘：把一整局的局面排队逐个分析。
+   *
+   * 为什么放在主进程做而不是界面上一手一手地问：分析引擎同一时刻只能算一个局面，
+   * "这一个算够了没有、该不该收手、下一个什么时候发"这套时序放在主进程里只有一份，
+   * 界面那边只管收结果。做完一个局面就发一条 review 事件，界面可以边跑边画。
+   */
+  async review(req: ReviewRequest): Promise<{ ok: boolean; error?: string }> {
+    // 复盘和实时分析抢同一个分析引擎，谁开始谁赢，另一个让位
+    this.stopAnalysis();
+    this.stopReview('replaced');
+    if (req.positions.length === 0) return { ok: false, error: '没有可复盘的着手' };
+    let engine: GtpEngine;
+    try {
+      engine = await this.ensureAnalyze();
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    const ctl = { stopped: false, reason: 'done' as 'done' | 'cancelled' | 'replaced' };
+    this.reviewCtl = {
+      stop: (reason) => {
+        ctl.stopped = true;
+        ctl.reason = reason;
+      }
+    };
+    this.emit({ type: 'log', text: `[复盘] 开始，共 ${req.positions.length} 个局面，每个算到 ${req.visits} 次访问。` });
+    void this.runReview(engine, req, ctl);
+    return { ok: true };
+  }
+
+  stopReview(reason: 'cancelled' | 'replaced' = 'cancelled'): void {
+    if (this.reviewCtl?.stop) this.reviewCtl.stop(reason);
+  }
+
+  private async runReview(
+    engine: GtpEngine,
+    req: ReviewRequest,
+    ctl: { stopped: boolean; reason: 'done' | 'cancelled' | 'replaced' }
+  ): Promise<void> {
+    let done = 0;
+    try {
+      for (const pos of req.positions) {
+        if (ctl.stopped) break;
+        const point = await this.analyzePosition(engine, pos.sgf, {
+          visits: req.visits,
+          maxTimeMs: req.maxTimeMs,
+          lines: req.lines,
+          isStopped: () => ctl.stopped
+        });
+        // 被叫停时手里这一份也可能是半截的，但它前面那几个局面是完整的，照样发出去
+        if (!point) break;
+        const wire: ReviewPointWire = {
+          nodeId: pos.nodeId,
+          ply: pos.ply,
+          turn: pos.turn,
+          // 引擎报的胜率是"轮到的那一方"的，这里统一换成黑棋视角
+          blackWinrate: pos.turn === 'B' ? point.winrate : 1 - point.winrate,
+          blackScoreLead: pos.turn === 'B' ? point.scoreLead : -point.scoreLead,
+          visits: point.visits,
+          bestMove: point.bestMove,
+          candidates: point.candidates.map((c) => ({
+            move: c.move,
+            blackWinrate: pos.turn === 'B' ? c.winrate : 1 - c.winrate,
+            visits: c.visits
+          }))
+        };
+        done += 1;
+        this.emit({ type: 'review', review: wire, reviewProgress: { done, total: req.positions.length } });
+      }
+      this.reviewCtl = null;
+      if (ctl.stopped && ctl.reason !== 'done') {
+        this.emit({
+          type: 'log',
+          text: `[复盘] 已停下，算完了 ${done} / ${req.positions.length} 个局面，已有的结果留着。`
+        });
+      } else {
+        this.emit({ type: 'log', text: `[复盘] 整局算完，${done} 个局面。` });
+      }
+      this.emit({ type: 'reviewEnd', reviewEnd: { reason: ctl.stopped ? ctl.reason : 'done' } });
+    } catch (e) {
+      this.reviewCtl = null;
+      const msg = e instanceof Error ? e.message : String(e);
+      this.emit({ type: 'log', text: `[复盘] ${msg}` });
+      this.emit({ type: 'reviewEnd', reviewEnd: { reason: 'error', error: msg } });
+    }
+  }
+
+  /**
+   * 算一个局面，到访问量或时间上限就收手。
+   *
+   * 和 analyze() 的区别是它要"算完返回"：analyze 是流式的，界面一直在收快照；
+   * 复盘得知道这一手算到了什么程度才能翻到下一手，所以这里收满就打断。
+   */
+  private async analyzePosition(
+    engine: GtpEngine,
+    sgf: string,
+    opts: { visits: number; maxTimeMs: number; lines: number; isStopped: () => boolean }
+  ): Promise<{
+    winrate: number;
+    scoreLead: number;
+    visits: number;
+    bestMove: string;
+    candidates: Array<{ move: string; winrate: number; visits: number }>;
+  } | null> {
+    const h = hashText(sgf);
+    if (this.synced.get(engine) !== h) {
+      writeFileSync(this.tempSgf, sgf, 'utf8');
+      await engine.send(`loadsgf ${this.tempSgf}`, 60000);
+      this.synced.set(engine, h);
+    }
+    await engine.send(`kata-set-param maxVisits ${Math.max(1, Math.round(opts.visits))}`, 15000).catch(() => undefined);
+    /*
+     * maxTime 是引擎上的常驻参数，上一轮分析留下的值会一直管着后面的搜索。
+     * 复盘只要按访问量收手，所以这里明确给一个很大的数，免得被上一次的限时提前掐断。
+     */
+    await engine
+      .send(`kata-set-param maxTime ${opts.maxTimeMs > 0 ? opts.maxTimeMs / 1000 : 3600}`, 15000)
+      .catch(() => undefined);
+
+    return new Promise((resolve, reject) => {
+      let candidates = new Map<string, { move: string; winrate: number; visits: number; scoreLead: number }>();
+      let top: { move: string; winrate: number; visits: number; scoreLead: number } | null = null;
+      let settled = false;
+      const started = Date.now();
+      /*
+       * 到点还没算够也得走：核显上偶发一次搜索卡住，整个复盘不该跟着一起停。
+       * 上限按"每手限时"再放宽一截（引擎收尾、报最后一行的余量），最小值 8 秒。
+       */
+      const ceiling = Math.max(8000, (opts.maxTimeMs > 0 ? opts.maxTimeMs : 0) + 8000);
+
+      const stream = engine.stream('kata-analyze 60', (line) => {
+        const { moves } = parseInfoLine(line);
+        if (!moves.length) return;
+        const before = candidates.size;
+        for (const info of moves) {
+          const move = info.move as string;
+          const existing = candidates.get(move);
+          if (existing && (info.visits ?? 0) < existing.visits) candidates = new Map();
+          candidates.set(move, {
+            move,
+            winrate: info.winrate ?? 0,
+            scoreLead: info.scoreLead ?? 0,
+            visits: info.visits ?? 0
+          });
+        }
+        const list = [...candidates.values()].sort((a, b) => b.visits - a.visits);
+        if (list.length) top = list[0];
+        const enough = top !== null && top.visits >= opts.visits;
+        if (candidates.size > before && (enough || opts.isStopped() || Date.now() - started > ceiling)) finish();
+      });
+
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        clearInterval(timer);
+        stream.stop();
+        if (!top) {
+          resolve(null);
+          return;
+        }
+        const list = [...candidates.values()].sort((a, b) => b.visits - a.visits).slice(0, Math.max(1, opts.lines));
+        resolve({
+          winrate: top.winrate,
+          scoreLead: top.scoreLead,
+          visits: top.visits,
+          bestMove: top.move,
+          candidates: list.map((c) => ({ move: c.move, winrate: c.winrate, visits: c.visits }))
+        });
+      };
+      // 引擎一行都不吐（局面非法、参数被拒）时，靠这个兜底别把复盘挂死
+      const timer = setInterval(() => {
+        if (settled) return;
+        if (opts.isStopped() || Date.now() - started > ceiling + 4000) finish();
+      }, 500);
+
+      void stream.promise.catch((e: unknown) => {
+        clearInterval(timer);
+        if (settled) return;
+        settled = true;
+        reject(e instanceof Error ? e : new Error(String(e)));
+      });
+    });
   }
 
   /**

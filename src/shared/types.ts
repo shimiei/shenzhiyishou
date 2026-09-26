@@ -124,6 +124,13 @@ export interface AppSettings {
   liveCapture: boolean;
   /** 自动落子：程序里落的子顺手点回网页棋盘。默认关，它真的会动到网页里那盘棋。 */
   autoPlay: boolean;
+  /**
+   * 最后一手的标记画成什么样。默认是现在的"异色点"：黑子上画白点、白子上画黑点。
+   * 盘上子多的时候一个点不够显眼，所以另给了红点和红三角这类不跟着棋子换色的样式。
+   */
+  lastMoveMark: LastMoveMark;
+  /** 复盘时每一手分析到多少次访问。访问量越大结论越准，一整局跑得也越久。 */
+  reviewVisits: number;
   recordDir: string;
   /**
    * 上次退出时的窗口尺寸与位置，退出前记下来，下次照着开。
@@ -153,12 +160,18 @@ export interface AppSettings {
     browserOpen: boolean;
   };
   vision: {
-    enabled: boolean;
     endpoint: string;
     apiKey: string;
     model: string;
   };
 }
+
+/**
+ * 最后一手的标记样式。
+ * 前两种跟棋子颜色反着来（异色点、异色圈），子多的时候看得清；
+ * 后面几种是固定的红色，在黑白子上都一样显眼。
+ */
+export type LastMoveMark = 'dot' | 'ring' | 'redDot' | 'redRing' | 'redTriangle' | 'none';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
@@ -175,6 +188,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   browserHome: 'about:blank',
   liveCapture: false,
   autoPlay: false,
+  lastMoveMark: 'dot',
+  reviewVisits: 150,
   recordDir: '',
   window: {
     width: 1500,
@@ -190,7 +205,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     browserOpen: false
   },
   vision: {
-    enabled: false,
     endpoint: '',
     apiKey: '',
     model: ''

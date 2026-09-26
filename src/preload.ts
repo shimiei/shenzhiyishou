@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import { CH, type AnalyzeRequest, type Api, type AppCommand, type DownloadProgress, type EngineEvent, type GenMoveRequest, type OpenTabRequest } from './shared/protocol';
+import { CH, type AnalyzeRequest, type Api, type AppCommand, type DownloadProgress, type EngineEvent, type GenMoveRequest, type OpenTabRequest, type ReviewRequest, type VisionRequest } from './shared/protocol';
 import type { AppSettings, BackendName, RecordMeta } from './shared/types';
 
 function on<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -18,6 +18,8 @@ const api: Api = {
     genMove: (req: GenMoveRequest) => ipcRenderer.invoke(CH.engineGenMove, req),
     analyzeStart: (req: AnalyzeRequest) => ipcRenderer.invoke(CH.engineAnalyzeStart, req),
     analyzeStop: () => ipcRenderer.invoke(CH.engineAnalyzeStop),
+    reviewStart: (req: ReviewRequest) => ipcRenderer.invoke(CH.engineReviewStart, req),
+    reviewStop: () => ipcRenderer.invoke(CH.engineReviewStop),
     benchmark: (modelId: string, backend: BackendName) => ipcRenderer.invoke(CH.engineBenchmark, modelId, backend),
     hint: (sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number) =>
       ipcRenderer.invoke(CH.engineHint, sgf, visits, color, maxTimeMs),
@@ -47,6 +49,9 @@ const api: Api = {
   settings: {
     get: () => ipcRenderer.invoke(CH.settingsGet),
     set: (patch: Partial<AppSettings>) => ipcRenderer.invoke(CH.settingsSet, patch)
+  },
+  vision: {
+    recognize: (req: VisionRequest) => ipcRenderer.invoke(CH.visionChat, req)
   },
   browser: {
     capture: (webContentsId: number) => ipcRenderer.invoke(CH.browserCapture, webContentsId),

@@ -20,6 +20,7 @@ import {
   createTree,
   deleteSubtree,
   infoFromTree,
+  mainLineEnd,
   makeMainLine,
   marksAt,
   moveAtSized,
@@ -34,6 +35,15 @@ import {
   type MarkType
 } from '../core/sgf/tree';
 import { adviceLine, colorName, isPassMove, type Advice } from '../core/advice';
+import {
+  buildReview,
+  nextProblem,
+  problemMoves,
+  summarize,
+  type ReviewMove,
+  type ReviewPoint,
+  type ReviewSummary
+} from '../core/review/review';
 import { cloneTree } from '../core/sgf/serialize';
 import { engineSgfFor } from '../core/sgf/engineSgf';
 import { parseSgf } from '../core/sgf/parse';
@@ -72,6 +82,7 @@ export type DialogName =
   | 'gameinfo'
   | 'shortcuts'
   | 'newgame'
+  | 'review'
   | null;
 
 export interface GameConfig {
@@ -141,6 +152,25 @@ interface AppStore {
 
   /** 实时截取与自动落子的最后一条状态，显示在浏览器栏上。 */
   sync: { text: string; at: number; ok: boolean } | null;
+
+  /** 复盘：引擎逐手算出来的原始结果，按节点存，整局跑完要好久，中途停下也留着。 */
+  reviewPoints: Record<number, ReviewPoint>;
+  /**
+   * 每份结果对应的局面长什么样（节点号 → 这一手或这个局面的特征）。
+   * 退到开局重下一盘时，新着法又会拿到 2、3、4 这些节点号，
+   * 只认节点号的话上一盘的评点会扣到这一盘上。
+   */
+  reviewSign: Record<number, string>;
+  /** 复盘整理出来的评点，跟着棋谱走，落一手就重算一遍。 */
+  reviewMoves: ReviewMove[];
+  reviewSummary: ReviewSummary;
+  reviewRunning: boolean;
+  /** 这一轮复盘算完了几个局面、一共几个。 */
+  reviewDone: number;
+  reviewTotal: number;
+  /** 上一轮是怎么结束的，界面据此提示一句。 */
+  reviewStopped: 'done' | 'cancelled' | 'replaced' | 'error' | null;
+  reviewError: string | null;
 
   // 动作
   boot: () => Promise<void>;
@@ -218,6 +248,17 @@ interface AppStore {
   pollBrowser: () => Promise<void>;
   /** 把一手棋点到网页棋盘上，点完再截一次核对。parentId 是这一手接在哪个节点后面。 */
   forwardMoveToBrowser: (point: number, color: 1 | 2, parentId: number) => Promise<boolean>;
+
+  /** 复盘：把整局（主线）逐手算一遍。已经算过的那一段会跳过，接着算剩下的。 */
+  startReview: () => Promise<void>;
+  stopReview: () => Promise<void>;
+  /** 主进程算完一个局面，结果记进来。 */
+  addReviewPoint: (p: ReviewPoint) => void;
+  endReview: (reason: 'done' | 'cancelled' | 'replaced' | 'error', error?: string) => void;
+  /** 清掉复盘结果。新开一局、导入棋谱、换访问量时调。 */
+  clearReview: () => void;
+  /** 跳到下一处（dir 为 1）或上一处（-1）问题手。 */
+  gotoProblem: (dir: 1 | -1) => void;
 }
 
 const emptyStatus: EngineStatus = {
@@ -236,6 +277,54 @@ const emptyStatus: EngineStatus = {
 function sgfFor(tree: GameTree, node: number): string {
   const color = colorToPlayAt(tree, node) === BLACK ? 'B' : 'W';
   return engineSgfFor(tree, node, color).sgf;
+}
+
+const emptyReviewSummary: ReviewSummary = {
+  moves: 0,
+  best: 0,
+  good: 0,
+  inaccuracy: 0,
+  mistake: 0,
+  blunder: 0,
+  worst: null,
+  totalLoss: 0
+};
+
+/**
+ * 把引擎逐局面的结果整理成评点。
+ *
+ * 棋谱可以在复盘之后继续往下走，也可以在分支里拐弯，所以每次都要照现在的树重算一遍：
+ * 主线路径变了，哪些手有结果、相邻两手的先后关系都可能变。
+ * 只有从起始局面开始连续算完的那一段能评：中间缺一份结果就断在那儿，
+ * 硬把断口两侧接起来会算出一个假的损失。
+ */
+function deriveReview(
+  tree: GameTree,
+  points: Record<number, ReviewPoint>,
+  signs: Record<number, string>
+): { moves: ReviewMove[]; summary: ReviewSummary } {
+  const size = propNum(tree, tree.root, 'SZ', 19);
+  const path = pathTo(tree, mainLineEnd(tree));
+  const playMoves: Array<{ nodeId: number; color: Stone; point: number }> = [];
+  const line: ReviewPoint[] = [];
+  for (let i = 0; i < path.length; i++) {
+    const id = path[i];
+    const p = points[id];
+    if (!p || p.ply !== i) break;
+    // 还要确认这个节点上现在摆的就是当时算的那个局面，见 reviewSign 的说明
+    if (signs[id] !== positionSign(tree, id)) break;
+    const mv = moveAtSized(tree, id);
+    line.push(p);
+    if (mv) playMoves.push({ nodeId: id, color: mv.color as Stone, point: mv.point });
+  }
+  const moves = buildReview(playMoves, line, size);
+  return { moves, summary: moves.length ? summarize(moves) : emptyReviewSummary };
+}
+
+/** 一个节点的局面特征：有着法就记着法，没有（开局那一手之前）就记盘面。 */
+function positionSign(tree: GameTree, id: number): string {
+  const mv = moveAtSized(tree, id);
+  return mv ? `${mv.color}:${mv.point}` : 'pos:' + positionKey(tree, id);
 }
 
 function clampRange(v: number, lo: number, hi: number): number {
@@ -314,6 +403,15 @@ export const useStore = create<AppStore>((set, get) => ({
   showOwnership: false,
   toasts: [],
   sync: null,
+  reviewPoints: {},
+  reviewSign: {},
+  reviewMoves: [],
+  reviewSummary: { moves: 0, best: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0, worst: null, totalLoss: 0 },
+  reviewRunning: false,
+  reviewDone: 0,
+  reviewTotal: 0,
+  reviewStopped: null,
+  reviewError: null,
 
   async boot() {
     const [settings, info] = await Promise.all([window.api.settings.get(), window.api.app.info()]);
@@ -368,6 +466,11 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   async setSettings(patch) {
+    /*
+     * 换了复盘访问量就把旧结果清掉。同一个局面用 100 次访问和 500 次访问算出来的
+     * 胜率不是一回事，两份混在一张曲线里，看着像是棋走坏了，其实是算得糙。
+     */
+    if (patch.reviewVisits !== undefined && patch.reviewVisits !== get().settings.reviewVisits) get().clearReview();
     const next = await window.api.settings.set(patch);
     const theme: 'dark' | 'light' =
       next.theme === 'system'
@@ -400,13 +503,19 @@ export const useStore = create<AppStore>((set, get) => ({
     // 盘面变了（落了子、摆了子、提了子）推荐就作废；只改注释标记时留着，
     // 那条推荐还是这个局面的。
     const sameBoard = prev.hint !== null && positionKey(tree, nextCurrent) === positionKey(prev.tree, cur);
+    /*
+     * 棋谱变了，复盘评点得跟着重算：多了一手就可能多出一处问题手，
+     * 在分支里拐弯也会让"后面那一手"变成另一手。原始结果按节点存着，重算的只是整理这一步。
+     */
+    const derived = Object.keys(prev.reviewPoints).length > 0 ? deriveReview(tree, prev.reviewPoints, prev.reviewSign) : null;
     set({
       tree,
       current: nextCurrent,
       past: [...get().past.slice(-120), get().tree],
       future: [],
       dirty: true,
-      hint: sameBoard ? prev.hint : null
+      hint: sameBoard ? prev.hint : null,
+      ...(derived ? { reviewMoves: derived.moves, reviewSummary: derived.summary } : {})
     });
   },
 
@@ -529,7 +638,11 @@ export const useStore = create<AppStore>((set, get) => ({
         return;
       }
     }
-    const res = addMoveNode(tree, current, color, point, { mainLine: true });
+    /*
+     * 来源都记成"人"：本地点击是人下的，实时截取接回来的那一手也是人在网页上下的。
+     * 光看 from 分不出这一点，但棋谱树上"这一手是谁下的"要的是这个区分，不是"从哪来的"。
+     */
+    const res = addMoveNode(tree, current, color, point, { mainLine: true, source: 'human' });
     get().commit(res.tree, res.id);
     get().setAnalysis(null);
     // 只有本程序里落的子才往网页上点。实时截取接回来的那一手是从网页上读来的，
@@ -541,7 +654,7 @@ export const useStore = create<AppStore>((set, get) => ({
   pass() {
     const { tree, current } = get();
     const color = colorToPlayAt(tree, current);
-    const res = addMoveNode(tree, current, color, PASS, { mainLine: true });
+    const res = addMoveNode(tree, current, color, PASS, { mainLine: true, source: 'human' });
     get().commit(res.tree, res.id);
     // 连续两停，终局
     const path = pathTo(res.tree, res.id);
@@ -585,7 +698,7 @@ export const useStore = create<AppStore>((set, get) => ({
       }
       const size = propNum(tree, tree.root, 'SZ', 19);
       const point = Position.parseVertex(res.move, size);
-      const r2 = addMoveNode(get().tree, get().current, color, point, { mainLine: true });
+      const r2 = addMoveNode(get().tree, get().current, color, point, { mainLine: true, source: 'ai' });
       get().commit(r2.tree, r2.id);
       void get().forwardMoveToBrowser(point, color, nodeAtRequest);
       if (get().game.mode === 'ai-vs-ai') setTimeout(() => void get().maybeAiTurn(), 400);
@@ -720,6 +833,7 @@ export const useStore = create<AppStore>((set, get) => ({
       hint: null,
       game: { ...get().game, ...opts, humanColor }
     });
+    get().clearReview();
     void get().maybeAiTurn();
   },
 
@@ -741,6 +855,8 @@ export const useStore = create<AppStore>((set, get) => ({
         deadStones: [],
         game: { ...get().game, mode: 'manual' }
       });
+      // 换了一盘棋，上一盘的复盘结果留着只会张冠李戴
+      get().clearReview();
       const info = infoFromTree(tree);
       get().toast(`已载入棋谱：${info.blackName || '黑'} 对 ${info.whiteName || '白'}`, 'success');
     } catch (e) {
@@ -775,6 +891,8 @@ export const useStore = create<AppStore>((set, get) => ({
         game: { ...get().game, mode: 'manual' }
       });
       get().toast(`已导入局面：黑 ${ab.length} 白 ${aw.length}`, 'success');
+      // 摆出来的新局面上没有可复盘的手顺，旧结果一并清掉
+      get().clearReview();
       return;
     }
     const { tree, current } = get();
@@ -999,6 +1117,132 @@ export const useStore = create<AppStore>((set, get) => ({
 
   setAnalysis(s) {
     set({ analysis: s });
+  },
+
+  async startReview() {
+    const { tree, settings, reviewPoints, reviewSign, reviewRunning } = get();
+    if (reviewRunning) return;
+    /*
+     * 复盘的对象是主线那一局棋，不是"当前翻到哪儿"。
+     * 从根节点沿着每层的第一个子节点走到底，就是这盘棋本身；
+     * 用户在分支里试的着法不参与复盘，免得把没下过的变化算进去。
+     */
+    const path = pathTo(tree, mainLineEnd(tree));
+    if (path.length < 2) {
+      get().toast('这局还没有着手可复盘', 'info');
+      return;
+    }
+    const positions: Array<{ nodeId: number; sgf: string; turn: 'B' | 'W'; ply: number }> = [];
+    for (let i = 0; i < path.length; i++) {
+      const id = path[i];
+      const turn = colorToPlayAt(tree, id) === BLACK ? 'B' : 'W';
+      const { sgf } = engineSgfFor(tree, id, turn);
+      positions.push({ nodeId: id, sgf, turn, ply: i });
+    }
+    /*
+     * 接着上次算：只有节点 id、手数、局面三者都对得上的那一段才算数，
+     * 复盘是照顺序算的，中间缺一个就没法比"这一手亏了多少"，
+     * 所以从第一个没算过的局面开始，前面那一整段必须已经算完。
+     * 局面那一项是关键：退到开局重下一盘时，节点号又会从 2 开始排。
+     */
+    let cover = 0;
+    while (cover + 1 < positions.length) {
+      const p = positions[cover];
+      const saved = reviewPoints[p.nodeId];
+      if (!saved || saved.ply !== p.ply) break;
+      if (reviewSign[p.nodeId] !== positionSign(tree, p.nodeId)) break;
+      cover += 1;
+    }
+    const todo = positions.slice(cover);
+    if (todo.length < 2) {
+      get().toast('这一局已经复盘完了', 'info');
+      return;
+    }
+    set({ reviewRunning: true, reviewDone: 0, reviewTotal: todo.length, reviewStopped: null, reviewError: null });
+    get().toast(`开始复盘：从第 ${cover} 手之后算起，共 ${todo.length} 个局面`, 'info');
+    const res = await window.api.engine.reviewStart({
+      positions: todo,
+      visits: settings.reviewVisits,
+      maxTimeMs: 0,
+      lines: 8
+    });
+    if (!res.ok) {
+      set({ reviewRunning: false, reviewError: res.error ?? '复盘没能开始' });
+      get().toast('复盘没能开始：' + (res.error ?? ''), 'error');
+    }
+  },
+
+  async stopReview() {
+    await window.api.engine.reviewStop();
+    // 结果不清：已经算出来的那一半照样有用
+    set({ reviewRunning: false });
+  },
+
+  addReviewPoint(p) {
+    const { tree, reviewPoints, reviewSign } = get();
+    const points = { ...reviewPoints, [p.nodeId]: p };
+    const signs = { ...reviewSign, [p.nodeId]: positionSign(tree, p.nodeId) };
+    const derived = deriveReview(tree, points, signs);
+    set({ reviewPoints: points, reviewSign: signs, reviewMoves: derived.moves, reviewSummary: derived.summary });
+  },
+
+  endReview(reason, error) {
+    set({ reviewRunning: false, reviewStopped: reason, reviewError: error ?? null });
+    const { reviewMoves } = get();
+    if (reason === 'cancelled' || reason === 'replaced') {
+      get().toast(
+        reason === 'replaced' ? '复盘被实时分析顶掉了，已经算完的部分留着' : `复盘停下了，已经算完 ${reviewMoves.length} 手`,
+        'info'
+      );
+      return;
+    }
+    if (reason === 'error') {
+      get().toast('复盘出错：' + (error ?? ''), 'error');
+      return;
+    }
+    const s = get().reviewSummary;
+    get().toast(
+      s.worst && s.worst.loss > 0
+        ? `复盘完了：${reviewMoves.length} 手，恶手 ${s.blunder} 处、失误 ${s.mistake} 处，最大的一手是第 ${s.worst.ply} 手`
+        : `复盘完了：${reviewMoves.length} 手`,
+      'success'
+    );
+    // 复盘完顺手停在第一处问题手上，省得自己去找
+    const first = problemMoves(reviewMoves)[0];
+    if (first) get().goto(first.nodeId);
+  },
+
+  clearReview() {
+    set({
+      reviewPoints: {},
+      reviewSign: {},
+      reviewMoves: [],
+      reviewSummary: { moves: 0, best: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0, worst: null, totalLoss: 0 },
+      reviewRunning: false,
+      reviewDone: 0,
+      reviewTotal: 0,
+      reviewStopped: null,
+      reviewError: null
+    });
+  },
+
+  gotoProblem(dir) {
+    const { tree, current, reviewMoves } = get();
+    if (reviewMoves.length === 0) {
+      get().toast('先跑一遍复盘', 'info');
+      return;
+    }
+    /*
+     * 当前这一手在复盘里的手数就是它在路径上的位置。用户可能正停在分支上，
+     * 那就按"从根走到当前节点数了几手"来找，找不到就从头开始找。
+     */
+    const ply = pathTo(tree, current).filter((id) => moveAtSized(tree, id)).length;
+    const hit = nextProblem(reviewMoves, ply, dir);
+    if (!hit) {
+      get().toast(dir > 0 ? '后面没有别的问题手了' : '前面没有别的问题手了', 'info');
+      return;
+    }
+    get().goto(hit.nodeId);
   },
 
   setThinking(v) {

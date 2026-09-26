@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../state/store';
-import { marksAt, moveAtSized, moveNumberAt, pathTo, propNum } from '../core/sgf/tree';
+import { marksAt, moveAtSized, moveNumberAt, moveSourceOf, pathTo, propNum } from '../core/sgf/tree';
 import { BLACK, PASS } from '../../shared/types';
+import { GRADE_LABEL, toPercent, type ReviewMove } from '../core/review/review';
 
 function vertexOf(point: number, size: number): string {
   if (point === PASS) return '停一手';
@@ -19,6 +20,7 @@ export function LeftPanel({ style }: { style?: React.CSSProperties }): React.Rea
   const promoteCurrent = useStore((s) => s.promoteCurrent);
   const setComment = useStore((s) => s.setComment);
   const setDialog = useStore((s) => s.setDialog);
+  const reviewMoves = useStore((s) => s.reviewMoves);
   const [tab, setTab] = useState<Tab>('tree');
   const size = propNum(tree, tree.root, 'SZ', 19);
 
@@ -40,6 +42,13 @@ export function LeftPanel({ style }: { style?: React.CSSProperties }): React.Rea
     const ids = pathTo(tree, current);
     return ids;
   }, [tree, current]);
+
+  /** 复盘的评点按节点索引，树上每一行直接查。 */
+  const reviewByNode = useMemo(() => {
+    const map = new Map<number, ReviewMove>();
+    for (const m of reviewMoves) map.set(m.nodeId, m);
+    return map;
+  }, [reviewMoves]);
 
   const comment = tree.nodes[current]?.props.C?.[0] ?? '';
   const [draft, setDraft] = useState<string | null>(null);
@@ -78,18 +87,31 @@ export function LeftPanel({ style }: { style?: React.CSSProperties }): React.Rea
                 const hasComment = Boolean(node.props.C?.[0]);
                 const markCount = marksAt(tree, row.id).length;
                 const name = node.props.N?.[0];
+                /*
+                 * 这一手是谁下的，以及复盘给它打了什么分。
+                 * 两者都要有才画：导入的棋谱没有来源，没复盘过的棋也没有评点。
+                 */
+                const src = moveSourceOf(tree, row.id);
+                const rev = mv ? reviewByNode.get(row.id) : undefined;
+                const tips: string[] = [];
+                if (hasComment) tips.push(node.props.C[0]);
+                if (rev) tips.push(`${GRADE_LABEL[rev.grade]}，亏 ${toPercent(Math.max(0, rev.loss))} 个点${rev.bestMove ? `，引擎推荐 ${rev.bestMove}` : ''}`);
                 return (
                   <div
                     key={row.id}
                     className={'tree-row' + (row.id === current ? ' active' : '')}
                     style={{ paddingLeft: 6 + row.depth * 13 }}
                     onClick={() => goto(row.id)}
-                    title={hasComment ? node.props.C[0] : undefined}
+                    title={tips.length ? tips.join('\n') : undefined}
                   >
                     <span className="num">{mv ? (mv.color === BLACK ? num + '.' : num + '…') : '—'}</span>
                     <span className="mv">
                       {mv ? vertexOf(mv.point, size) : name ?? '起始'}
                     </span>
+                    {src ? <span className={'who-tag ' + src}>{src === 'ai' ? '机' : '人'}</span> : null}
+                    {rev && rev.grade !== 'best' && rev.grade !== 'good' ? (
+                      <span className={'loss-tag ' + rev.grade}>{toPercent(Math.max(0, rev.loss))}</span>
+                    ) : null}
                     {row.branch ? <span className="branch-tag">分支</span> : null}
                     {hasComment ? <span className="branch-tag">注</span> : null}
                     {markCount > 0 ? <span className="branch-tag">标</span> : null}

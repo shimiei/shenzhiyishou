@@ -110,6 +110,9 @@ export function useShortcuts(): void {
         case 'n':
           void s.setSettings({ moveNumbers: !s.settings.moveNumbers });
           break;
+        case 'r':
+          s.setDialog('review');
+          break;
         case '?':
           s.setDialog('shortcuts');
           break;

@@ -302,14 +302,34 @@ export function addMoveNode(
   parentId: number,
   color: 1 | 2,
   point: number,
-  opts: { mainLine?: boolean } = {}
+  opts: { mainLine?: boolean; source?: MoveSource } = {}
 ): { tree: GameTree; id: number } {
   const size = propNum(tree, tree.root, 'SZ', 19);
   const value = point === PASS ? '' : toSgfPoint(point % size, Math.floor(point / size));
   const key = color === BLACK ? 'B' : 'W';
-  const res = addChild(tree, parentId, { [key]: [value] });
+  const props: SgfProps = { [key]: [value] };
+  /*
+   * 记下这一手是谁下的，左侧棋谱树上要标"人"还是"机"。
+   * 用自定义属性而不是塞进注释：注释是给用户看的，功能性的标记混进去，
+   * 用户一编辑注释就把它弄没了。别的工具读不懂这个属性也只会忽略，不影响棋谱本身。
+   */
+  if (opts.source) props[SOURCE_PROP] = [opts.source];
+  const res = addChild(tree, parentId, props);
   if (opts.mainLine === false) return res;
   return { tree: promoteVariation(res.tree, res.id), id: res.id };
+}
+
+/**
+ * 某一手是谁下的。存在自定义属性 SRC 上，取值 human 或 ai。
+ * 没有这个属性就是不知道（导入的棋谱、摆子节点都算不知道），界面上不标。
+ */
+export type MoveSource = 'human' | 'ai';
+
+export const SOURCE_PROP = 'SRC';
+
+export function moveSourceOf(tree: GameTree, id: number): MoveSource | null {
+  const v = tree.nodes[id]?.props[SOURCE_PROP]?.[0]?.toLowerCase();
+  return v === 'human' || v === 'ai' ? v : null;
 }
 
 /** 把某个节点提到其父节点的第一个子节点，也就是主线位置。 */
@@ -379,6 +399,18 @@ export function mainLineLength(tree: GameTree): number {
     cur = n.children[0];
   }
   return len;
+}
+
+/** 主线最后一个节点：从根开始每层都走第一个子节点。复盘和同步都按这条线走。 */
+export function mainLineEnd(tree: GameTree): number {
+  let cur = tree.root;
+  const guard = new Set<number>();
+  for (;;) {
+    guard.add(cur);
+    const kid = (tree.nodes[cur]?.children ?? []).filter((c) => tree.nodes[c] && !guard.has(c));
+    if (kid.length === 0) return cur;
+    cur = kid[0];
+  }
 }
 
 /** 收集主线到某个节点为止的着法，用于引擎同步。 */

@@ -34,6 +34,11 @@ export function Toolbar(): React.ReactElement {
   const past = useStore((s) => s.past.length);
   const future = useStore((s) => s.future.length);
   const finished = useStore((s) => s.finished);
+  const reviewMoves = useStore((s) => s.reviewMoves);
+  const reviewRunning = useStore((s) => s.reviewRunning);
+  const reviewDone = useStore((s) => s.reviewDone);
+  const reviewTotal = useStore((s) => s.reviewTotal);
+  const gotoProblem = useStore((s) => s.gotoProblem);
 
   const save = async (): Promise<void> => {
     const { tree, filePath } = useStore.getState();
@@ -126,6 +131,20 @@ export function Toolbar(): React.ReactElement {
       </button>
       <button className="btn" onClick={() => setDialog('score')} title="形势判断与数子（E）">
         形势判断
+      </button>
+      <div className="tb-sep" />
+      <button
+        className={'btn' + (reviewRunning ? ' primary' : '')}
+        onClick={() => setDialog('review')}
+        title="逐手复盘：让引擎把这一局的每一手都算一遍，找出恶手与失误（R）"
+      >
+        {reviewRunning ? `复盘 ${reviewDone}/${reviewTotal}` : '复盘'}
+      </button>
+      <button className="btn" disabled={reviewMoves.length === 0} onClick={() => gotoProblem(-1)} title="跳到上一处问题手">
+        上一处问题
+      </button>
+      <button className="btn" disabled={reviewMoves.length === 0} onClick={() => gotoProblem(1)} title="跳到下一处问题手">
+        下一处问题
       </button>
       <div className="spacer" />
       <div className="seg" title="棋盘缩放">

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, screen, shell, webContents } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, net, screen, shell, webContents } from 'electron';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,7 +7,8 @@ import { deleteRecord, getRecord, listRecords, loadSettings, saveRecord, saveSet
 import { cancelDownload, downloadModel, importModel, listModels, openModelsFolder, removeModel } from './models';
 import { availableBackends, backendDir, engineRoot, ensureRuntime, logsDir, modelsDir, recordsDir, tmpDir, userDataRoot } from './paths';
 import { fitWindow, type Box } from './windowState';
-import { CH, type AppCommand, type AppInfo, type DownloadProgress, type EngineEvent } from '../shared/protocol';
+import { visionChat } from './vision';
+import { CH, type AppCommand, type AppInfo, type DownloadProgress, type EngineEvent, type VisionRequest } from '../shared/protocol';
 import type { AppSettings, BackendName, RecordMeta } from '../shared/types';
 
 // 引擎与网络走 ASCII 路径，避免中文路径在 C++ 引擎里出问题
@@ -340,6 +341,10 @@ function registerIpc(): void {
   ipcMain.handle(CH.engineAnalyzeStop, async () => {
     engine.stopAnalysis();
   });
+  ipcMain.handle(CH.engineReviewStart, async (_e, req: Parameters<EngineManager['review']>[0]) => engine.review(req));
+  ipcMain.handle(CH.engineReviewStop, async () => {
+    engine.stopReview('cancelled');
+  });
   ipcMain.handle(CH.engineBenchmark, async (_e, modelId: string, backend: BackendName) => engine.benchmark(modelId, backend));
 
   ipcMain.handle(CH.modelsList, () => listModels());
@@ -414,6 +419,15 @@ function registerIpc(): void {
     if (patch.theme) applyThemeToWindow(patch.theme);
     return next;
   });
+
+  /*
+   * 视觉大模型那一问由主进程代发。界面自己的 CSP 是 connect-src 'self'，
+   * 在渲染进程里直接 fetch 外部接口只会得到一句 Failed to fetch。
+   * net.fetch 走 Chromium 的网络栈，系统代理和证书都照常。
+   */
+  ipcMain.handle(CH.visionChat, async (_e, req: VisionRequest) =>
+    visionChat(req, { fetchImpl: (url, init) => net.fetch(url, init) })
+  );
 
   ipcMain.handle(CH.browserCapture, async (_e, webContentsId: number) => {
     const target = webContents.fromId(webContentsId);

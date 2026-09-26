@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BLACK, EMPTY, PASS, WHITE, type Stone } from '../../shared/types';
+import { BLACK, EMPTY, PASS, WHITE, type LastMoveMark, type Stone } from '../../shared/types';
 import { Position } from '../core/go/position';
 import type { Mark } from '../core/sgf/tree';
 
@@ -24,6 +24,8 @@ interface BoardProps {
   dead?: number[];
   showCoords?: boolean;
   showNumbers?: boolean;
+  /** 最后一手的画法。默认异色点，跟以前一样。 */
+  lastMoveMark?: LastMoveMark;
   /** 各交叉点上的手数，只有开启手数显示时用得上。 */
   numbers?: Map<number, number>;
   interactive?: boolean;
@@ -107,6 +109,7 @@ export function Board({
   dead = [],
   showCoords = true,
   showNumbers = false,
+  lastMoveMark = 'dot',
   numbers,
   interactive = true,
   clickable = true,
@@ -295,13 +298,51 @@ export function Board({
       ctx.stroke();
     }
 
-    // 最后一手
-    if (lastMove !== null && lastMove !== undefined && lastMove !== PASS && lastMove >= 0 && lastMove < size * size) {
+    /*
+     * 最后一手。样式由设置决定：跟棋子反色的点/圈最轻，红色的一眼能认出来。
+     * 空点上没有棋子可衬托，异色点那种取的是底色蓝，所以哪种样式在空点上都看得见。
+     */
+    if (lastMoveMark !== 'none' && lastMove !== null && lastMove !== undefined && lastMove !== PASS && lastMove >= 0 && lastMove < size * size) {
       const [cx, cy] = at(lastMove);
-      ctx.fillStyle = contrast(lastMove);
+      const r = Math.max(2, step * 0.1);
+      const red = 'rgba(226,74,64,0.96)';
       ctx.beginPath();
-      ctx.arc(cx, cy, Math.max(2, step * 0.1), 0, Math.PI * 2);
-      ctx.fill();
+      switch (lastMoveMark) {
+        case 'ring':
+          ctx.strokeStyle = contrast(lastMove);
+          ctx.lineWidth = Math.max(1.4, step * 0.055);
+          ctx.arc(cx, cy, r * 1.25, 0, Math.PI * 2);
+          ctx.stroke();
+          break;
+        case 'redDot':
+          ctx.fillStyle = red;
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        case 'redRing':
+          ctx.strokeStyle = red;
+          ctx.lineWidth = Math.max(1.4, step * 0.055);
+          ctx.arc(cx, cy, r * 1.25, 0, Math.PI * 2);
+          ctx.stroke();
+          break;
+        case 'redTriangle': {
+          const t = r * 1.5;
+          ctx.strokeStyle = red;
+          ctx.lineWidth = Math.max(1.6, step * 0.062);
+          ctx.lineJoin = 'round';
+          ctx.moveTo(cx, cy - t * 1.15);
+          ctx.lineTo(cx + t * 1.05, cy + t * 0.75);
+          ctx.lineTo(cx - t * 1.05, cy + t * 0.75);
+          ctx.closePath();
+          ctx.stroke();
+          break;
+        }
+        default:
+          ctx.fillStyle = contrast(lastMove);
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.fill();
+          break;
+      }
     }
 
     // 标记
@@ -480,6 +521,7 @@ export function Board({
     deadSet,
     showCoords,
     showNumbers,
+    lastMoveMark,
     interactive,
     preview
   ]);

@@ -109,6 +109,11 @@ export function App(): React.ReactElement {
         const snap = e.snapshot;
         if (snap.nodeId >= 0 && snap.nodeId !== useStore.getState().current) return;
         st.setAnalysis(snap);
+      } else if (e.type === 'review' && e.review) {
+        st.addReviewPoint(e.review);
+        if (e.reviewProgress) useStore.setState({ reviewDone: e.reviewProgress.done, reviewTotal: e.reviewProgress.total });
+      } else if (e.type === 'reviewEnd' && e.reviewEnd) {
+        st.endReview(e.reviewEnd.reason, e.reviewEnd.error);
       }
     });
     return off;
@@ -455,6 +460,7 @@ export function App(): React.ReactElement {
                 hintColor={hint?.color ?? null}
                 showCoords={settings.coords}
                 showNumbers={settings.moveNumbers}
+                lastMoveMark={settings.lastMoveMark}
                 numbers={numbers}
                 zoom={zoom}
                 onHover={setHover}

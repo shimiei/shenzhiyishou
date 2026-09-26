@@ -10,6 +10,8 @@ export const CH = {
   engineGenMove: 'engine:genmove',
   engineAnalyzeStart: 'engine:analyzeStart',
   engineAnalyzeStop: 'engine:analyzeStop',
+  engineReviewStart: 'engine:reviewStart',
+  engineReviewStop: 'engine:reviewStop',
   engineBenchmark: 'engine:benchmark',
   engineHint: 'engine:hint',
   engineEvent: 'engine:event',
@@ -32,6 +34,8 @@ export const CH = {
 
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
+
+  visionChat: 'vision:chat',
 
   browserCapture: 'browser:capture',
   browserClick: 'browser:click',
@@ -82,11 +86,69 @@ export interface OpenTabRequest {
 }
 
 export interface EngineEvent {
-  type: 'status' | 'info' | 'log' | 'move' | 'error' | 'genmove-done';
+  type: 'status' | 'info' | 'log' | 'move' | 'error' | 'genmove-done' | 'review' | 'reviewEnd';
   status?: EngineStatus;
   snapshot?: AnalysisSnapshot;
   text?: string;
   move?: string;
+  /** 复盘：刚算完的一个局面。 */
+  review?: ReviewPointWire;
+  /** 复盘：已经算完几个、一共几个。 */
+  reviewProgress?: { done: number; total: number };
+  /**
+   * 复盘结束的原因。cancelled 是用户点了取消，replaced 是被别的分析挤掉，
+   * error 是引擎出错，done 是整局算完了。前三种都保留已经算出来的那部分。
+   */
+  reviewEnd?: { reason: 'done' | 'cancelled' | 'replaced' | 'error'; error?: string };
+}
+
+/** 主进程算完一个局面后回给界面的结果。胜率一律换算成黑棋视角。 */
+export interface ReviewPointWire {
+  nodeId: number;
+  ply: number;
+  turn: 'B' | 'W';
+  blackWinrate: number;
+  blackScoreLead: number;
+  visits: number;
+  bestMove: string;
+  candidates: Array<{ move: string; blackWinrate: number; visits: number }>;
+}
+
+export interface ReviewRequest {
+  /**
+   * 按手顺排好的局面，起始局面在最前面。每个都带一份完整 SGF：
+   * 切棋谱是照树切的，那是渲染进程那边 core/sgf 的事，主进程不重复一份解析器。
+   */
+  positions: Array<{ nodeId: number; sgf: string; turn: 'B' | 'W'; ply: number }>;
+  /** 每个局面算到多少次访问就收手。 */
+  visits: number;
+  /** 每个局面的时间上限（毫秒），0 表示只按访问量收手。 */
+  maxTimeMs: number;
+  /** 每个局面最多记几个候选点。 */
+  lines: number;
+}
+
+/** 请视觉大模型看一张棋盘的图。整件事在主进程发，渲染进程只负责说"要什么"。 */
+export interface VisionRequest {
+  endpoint: string;
+  model: string;
+  apiKey: string;
+  /** data:image/png;base64,... 形式的图。 */
+  imageDataUrl: string;
+  /** 棋盘几路，提示里要写清楚。 */
+  size: number;
+}
+
+/** 主进程把正文带回来，或者把失败的原因带回来。 */
+export interface VisionResult {
+  ok: boolean;
+  /** 模型输出的正文（ok 为真时才有）。 */
+  content?: string;
+  /** HTTP 状态码，接口报错时有。 */
+  status?: number;
+  error?: string;
+  /** 出错时服务端原话的前几百个字。 */
+  body?: string;
 }
 
 export interface GenMoveRequest {
@@ -164,6 +226,9 @@ export interface Api {
     genMove(req: GenMoveRequest): Promise<GenMoveResult>;
     analyzeStart(req: AnalyzeRequest): Promise<{ ok: boolean; error?: string }>;
     analyzeStop(): Promise<void>;
+    /** 复盘：把一整局的局面排队逐个分析，结果通过 onEvent 的 review 事件回来。 */
+    reviewStart(req: ReviewRequest): Promise<{ ok: boolean; error?: string }>;
+    reviewStop(): Promise<void>;
     benchmark(modelId: string, backend: BackendName): Promise<BenchmarkResult>;
     hint(sgf: string, visits: number, color: 'B' | 'W', maxTimeMs: number): Promise<GenMoveResult>;
     onEvent(cb: (e: EngineEvent) => void): () => void;
@@ -192,6 +257,10 @@ export interface Api {
   settings: {
     get(): Promise<AppSettings>;
     set(patch: Partial<AppSettings>): Promise<AppSettings>;
+  };
+  vision: {
+    /** 由主进程代发请求：界面自己的 CSP 不放行外部地址。 */
+    recognize(req: VisionRequest): Promise<VisionResult>;
   };
   browser: {
     capture(webContentsId: number): Promise<string | null>;

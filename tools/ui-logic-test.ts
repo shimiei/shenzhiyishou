@@ -2,14 +2,29 @@
  * 界面逻辑自测：内置浏览器的标签页规则、分栏尺寸的夹取，以及送去引擎的 SGF 形态。
  * 这几块出错不会崩，只会让界面别扭（关掉标签跳到别的页面、分隔条拖不动、
  * 某块窗口宽度下按钮被截断），或者让引擎直接拒收整盘棋。
+ * 另外还盯着复盘（逐手亏损、问题手排序、胜率曲线）、棋谱树上的来源标记，
+ * 以及最后一手标记的可选样式：这几块错了不会崩，只会让复盘结论或界面标签不可信。
  * 由 tools/ui-logic-selftest.mjs 打包后运行。
  */
-import { BLACK, PASS, WHITE, type GameTree, type SgfProps } from '../src/shared/types';
+import { BLACK, DEFAULT_SETTINGS, PASS, WHITE, type GameTree, type SgfProps } from '../src/shared/types';
 import { closeTab, makeTab, openTab, stepTab, tabTitle, type BrowserTab } from '../src/renderer/core/browser/tabs';
 import { normalizeUrl } from '../src/renderer/core/browser/url';
 import { expectStone, isPassPoint, planMirror, pointToPage } from '../src/renderer/core/browser/mirror';
 import { adviceChip, adviceLine, isPassMove, leadText } from '../src/renderer/core/advice';
 import { engineSgfFor } from '../src/renderer/core/sgf/engineSgf';
+import { serializeSgf } from '../src/renderer/core/sgf/serialize';
+import { LAST_MOVE_MARK_OPTIONS } from '../src/renderer/core/board/marks';
+import { endpointHint, parseVisionGrid } from '../src/renderer/core/vision';
+import { visionBody, visionChat, visionPrompt } from '../src/main/vision';
+import {
+  buildReview,
+  curvePoints,
+  nextProblem,
+  problemMoves,
+  summarize,
+  toPercent,
+  type ReviewPoint
+} from '../src/renderer/core/review/review';
 import { parseSgf } from '../src/renderer/core/sgf/parse';
 import {
   addChild,
@@ -17,6 +32,7 @@ import {
   canSetTurn,
   colorToPlayAt,
   createTree,
+  moveSourceOf,
   positionAt,
   positionKey,
   setProp,
@@ -547,6 +563,280 @@ section('自动落子：交叉点换算成网页坐标');
 
   eq(pointToPage(grid, 19 * 19, { width: 1, height: 1 }, { width: 1, height: 1 }), null, '越界的点不给坐标');
   eq(pointToPage({ ...grid, step: 0 }, 60, { width: 1, height: 1 }, { width: 1, height: 1 }), null, '网格步长不合法就不点');
+}
+
+section('复盘：从逐手分析结果算亏损');
+{
+  // 四个局面，胜率都是黑棋视角。第一手黑、第二手白、第三手黑。
+  const pts: ReviewPoint[] = [
+    { nodeId: 1, ply: 0, turn: 'B', blackWinrate: 0.5, blackScoreLead: 0, visits: 100, bestMove: 'Q16', candidates: [{ move: 'Q16', blackWinrate: 0.5, visits: 100 }, { move: 'D4', blackWinrate: 0.48, visits: 20 }] },
+    { nodeId: 2, ply: 1, turn: 'W', blackWinrate: 0.42, blackScoreLead: -1.5, visits: 100, bestMove: 'D4', candidates: [{ move: 'D4', blackWinrate: 0.42, visits: 100 }] },
+    { nodeId: 3, ply: 2, turn: 'B', blackWinrate: 0.5, blackScoreLead: 0.5, visits: 100, bestMove: 'Q16', candidates: [{ move: 'Q16', blackWinrate: 0.5, visits: 100 }] },
+    { nodeId: 4, ply: 3, turn: 'W', blackWinrate: 0.2, blackScoreLead: -8, visits: 100, bestMove: 'K10', candidates: [{ move: 'K10', blackWinrate: 0.2, visits: 100 }, { move: 'C3', blackWinrate: 0.19, visits: 30 }] }
+  ];
+  const moves = [
+    { nodeId: 2, color: BLACK, point: 3 * 19 + 15 },
+    { nodeId: 3, color: WHITE, point: 15 * 19 + 3 },
+    { nodeId: 4, color: BLACK, point: 9 * 19 + 9 }
+  ];
+  const rev = buildReview(moves, pts, 19);
+  eq(rev.length, 3, '三手都评上了');
+
+  // 黑走 Q16：胜率 0.5 掉到 0.42，黑方亏 8 个点，而且正是引擎候选里的第一手
+  eq(toPercent(rev[0].loss), 8, '黑棋这一手亏 8 个点');
+  eq(rev[0].rank, 1, '走的就是引擎候选里的第一手');
+  eq(rev[0].grade, 'mistake', '8 个点算失误');
+  eq(rev[0].vertex, 'Q16', '着点写成 GTP 坐标');
+  eq(rev[0].bestMove, 'Q16', '引擎推荐的那一手也记下来了');
+
+  // 白走 D4 之后黑棋胜率涨回来，说明亏的是白棋；白的胜率是 1 减黑的，符号要翻过来
+  eq(toPercent(rev[1].loss), 8, '白棋这一手同样亏 8 个点');
+  ok(rev[1].lossPoints > 0, '白棋目数上也是亏的（正值代表下棋那方亏）', rev[1].lossPoints);
+  eq(rev[1].grade, 'mistake', '白棋这一手也是失误');
+
+  // 黑走 K10：0.5 掉到 0.2，亏 30 个点
+  eq(toPercent(rev[2].loss), 30, '黑棋这一手亏 30 个点');
+  eq(rev[2].grade, 'blunder', '30 个点算恶手');
+  eq(rev[2].ply, 3, '手数按顺序排');
+
+  const sum = summarize(rev);
+  eq(sum.moves, 3, '统计了 3 手');
+  eq(sum.blunder, 1, '统计里有一个恶手');
+  eq(sum.mistake, 2, '统计里有两个失误');
+  eq(sum.best, 0, '没有最佳');
+  eq(sum.worst?.ply, 3, '最坏的是第三手');
+  ok(Math.abs(sum.totalLoss - 0.46) < 1e-9, '总损失是各手之和', sum.totalLoss);
+}
+
+section('复盘：不亏的手与没算完的手');
+{
+  const pts: ReviewPoint[] = [
+    { nodeId: 1, ply: 0, turn: 'B', blackWinrate: 0.5, blackScoreLead: 0, visits: 100, bestMove: 'Q16', candidates: [{ move: 'Q16', blackWinrate: 0.5, visits: 100 }] },
+    { nodeId: 2, ply: 1, turn: 'W', blackWinrate: 0.5, blackScoreLead: 0, visits: 100, bestMove: 'D4', candidates: [{ move: 'D4', blackWinrate: 0.5, visits: 100 }] }
+  ];
+  const rev = buildReview([{ nodeId: 2, color: BLACK, point: 3 * 19 + 15 }], pts, 19);
+  eq(rev[0].grade, 'best', '胜率没掉又是引擎推荐的那一手，算最佳');
+  eq(toPercent(rev[0].loss), 0, '没有损失');
+  eq(problemMoves(rev).length, 0, '没有损失就不算问题手');
+  eq(summarize(rev).worst?.ply, 1, '统计里最坏的那一手仍然是它（界面要显示）');
+
+  // 引擎只算完两个局面，却有五手：对不上的部分不评，免得把没算出来当成下得差
+  const short: ReviewPoint[] = [
+    { nodeId: 1, ply: 0, turn: 'B', blackWinrate: 0.5, blackScoreLead: 0, visits: 100, bestMove: 'Q16', candidates: [] },
+    { nodeId: 2, ply: 1, turn: 'W', blackWinrate: 0.45, blackScoreLead: -1, visits: 100, bestMove: 'D4', candidates: [] }
+  ];
+  const many = [1, 2, 3, 4, 5].map((i) => ({ nodeId: i, color: BLACK, point: i }));
+  eq(buildReview(many, short, 19).length, 1, '只评出能对上的那一手');
+  eq(buildReview(many, [], 19).length, 0, '一个结果都没有就什么都不评');
+  eq(buildReview([], short, 19).length, 0, '没有着手就不评');
+}
+
+section('复盘：问题手排序与前后跳转');
+{
+  // 胜率按手数排：0.5 → 0.48（黑小亏）→ 0.58（白亏 10 点）→ 0.58（黑不亏）→ 0.90（白亏 32 点）
+  const raw = [0.5, 0.48, 0.58, 0.58, 0.9];
+  const pts: ReviewPoint[] = raw.map((wr, i) => ({
+    nodeId: i + 1,
+    ply: i,
+    turn: (i % 2 === 0 ? 'B' : 'W') as 'B' | 'W',
+    blackWinrate: wr,
+    blackScoreLead: 0,
+    visits: 100,
+    bestMove: 'Q16',
+    candidates: []
+  }));
+  const moves = [2, 3, 4, 5].map((nodeId, i) => ({ nodeId, color: i % 2 === 0 ? BLACK : WHITE, point: i }));
+  const rev = buildReview(moves, pts, 19);
+  eq(rev.length, 4, '四手都评上了');
+
+  const probs = problemMoves(rev);
+  eq(probs.length, 2, '两处值得看的地方');
+  eq(probs[0].ply, 4, '亏得多的排在前面');
+  eq(probs[0].grade, 'blunder', '第 4 手是恶手');
+  eq(probs[1].ply, 2, '第二处是第 2 手');
+
+  eq(nextProblem(rev, 0, 1)?.ply, 2, '从开局往后找，第一处是第 2 手');
+  eq(nextProblem(rev, 2, 1)?.ply, 4, '从第 2 手往后找是第 4 手');
+  eq(nextProblem(rev, 4, 1), null, '最后一处之后没有了');
+  eq(nextProblem(rev, 4, -1)?.ply, 2, '从第 4 手往前找是第 2 手');
+  eq(nextProblem(rev, 1, -1), null, '第一处之前没有了');
+  eq(nextProblem(rev, 0, 1, 'blunder')?.ply, 4, '只看恶手时第 2 手不算');
+}
+
+section('复盘：胜率曲线');
+{
+  const pts: ReviewPoint[] = [
+    { nodeId: 3, ply: 1, turn: 'W', blackWinrate: -0.2, blackScoreLead: 0, visits: 100, bestMove: 'D4', candidates: [] },
+    { nodeId: 1, ply: 0, turn: 'B', blackWinrate: 0.5, blackScoreLead: 0, visits: 100, bestMove: 'Q16', candidates: [] },
+    { nodeId: 5, ply: 2, turn: 'B', blackWinrate: 1.4, blackScoreLead: 0, visits: 100, bestMove: 'Q16', candidates: [] }
+  ];
+  const c = curvePoints(pts);
+  eq(c.length, 3, '三个点都在');
+  eq(c[0].ply, 0, '按手数排序，起点在最前面');
+  eq(c[1].ply, 1, '第二个点是第 1 手');
+  eq(c[1].black, 0, '小于 0 的胜率压到 0');
+  eq(c[2].black, 1, '大于 1 的胜率压到 1');
+}
+
+section('棋谱树：每一手是谁下的');
+{
+  const t0 = createTree(19, 7.5);
+  const human = addMoveNode(t0, t0.root, BLACK, 3 * 19 + 3, { mainLine: true, source: 'human' });
+  const ai = addMoveNode(human.tree, human.id, WHITE, 15 * 19 + 15, { mainLine: true, source: 'ai' });
+  const plain = addMoveNode(ai.tree, ai.id, BLACK, 3 * 19 + 15, { mainLine: true });
+  eq(moveSourceOf(ai.tree, human.id), 'human', '人下的一手记住了');
+  eq(moveSourceOf(ai.tree, ai.id), 'ai', '机器下的一手记住了');
+  eq(moveSourceOf(ai.tree, plain.id), null, '没标来源的就当不知道（导入的棋谱）');
+  eq(moveSourceOf(ai.tree, t0.root), null, '起始节点没有来源');
+
+  // 存成 SGF 再读回来，标记得还在
+  const text = serializeSgf(ai.tree);
+  ok(text.includes('SRC[human]') && text.includes('SRC[ai]'), '棋谱文件里带着来源标记');
+  const back = parseSgf(text)[0];
+  const chain: number[] = [];
+  let cur = back.root;
+  for (;;) {
+    chain.push(cur);
+    const kids = back.nodes[cur]?.children ?? [];
+    if (kids.length === 0) break;
+    cur = kids[0];
+  }
+  const sources = chain.map((id) => moveSourceOf(back, id)).filter((v) => v !== null);
+  eq(sources.length, 2, '读回来两手的来源都在');
+  eq(sources[0], 'human', '第一手还是人下的');
+  eq(sources[1], 'ai', '第二手还是机器下的');
+  eq(moveSourceOf(back, chain[3]), null, '没标的那一手读回来还是不知道');
+
+  // 送去引擎的那份要摘掉自定义属性，KataGo 不认识会当成非法属性拒收
+  const sent = engineSgfFor(ai.tree, ai.id, 'B').sgf;
+  ok(!sent.includes('SRC'), '送去引擎的那份没有这个自定义属性');
+  ok(sent.includes('dd') && sent.includes('pp'), '两手着法本身还在');
+}
+
+section('最后一手标记：可选样式');
+{
+  const values = LAST_MOVE_MARK_OPTIONS.map((o) => o.value);
+  eq(values.length, 6, '六个样式可选');
+  eq(new Set(values).size, 6, '样式名没有重的');
+  ok(values.includes(DEFAULT_SETTINGS.lastMoveMark), '默认值能在设置里选到');
+  eq(DEFAULT_SETTINGS.lastMoveMark, 'dot', '默认还是原来那个异色点');
+  for (const o of LAST_MOVE_MARK_OPTIONS) ok(o.label.length > 0, '每个样式都有中文名字：' + o.value);
+}
+
+section('视觉大模型：把正文读成棋盘');
+{
+  const blank = (n: number, fill = '.') => fill.repeat(n);
+  // 一整张空盘，中间一颗黑一颗白
+  const rows = [
+    blank(9) + 'X' + blank(9),
+    blank(19),
+    blank(9) + 'O' + blank(9),
+    ...new Array(16).fill(blank(19))
+  ];
+  eq(rows.length, 19, '拼出来正好 19 行');
+  const g = parseVisionGrid(rows.join('\n'), 19);
+  eq(g?.length, 361, '读出来 361 个点');
+  eq(g?.[9], BLACK, '第一行中间那颗是黑子');
+  eq(g?.[2 * 19 + 9], WHITE, '第三行中间那颗是白子');
+  eq(g?.[0], 0, '没提到的地方是空点');
+
+  // 模型爱加的前后缀：解释、代码围栏、行号、行尾空格，都不该把它带偏
+  const noisy = ['这是一张 19 路棋盘：', '```', ...rows.map((r, i) => `${i + 1} ${r}  `), '```', '以上。'].join('\n');
+  eq(parseVisionGrid(noisy, 19)?.[9], BLACK, '带解释和行号也认得出');
+
+  // 小写 x、o 也认
+  const lower = rows.map((r, i) => (i === 9 ? blank(9) + 'x' + blank(9) : r));
+  eq(parseVisionGrid(lower.join('\n'), 19)?.[9], BLACK, '小写 x 也当黑子');
+
+  // 行数不够、长短不齐、路数不对，都算它没按规矩来
+  eq(parseVisionGrid(rows.slice(0, 18).join('\n'), 19), null, '少一行就不认');
+  eq(parseVisionGrid([...rows.slice(0, 18), blank(18)].join('\n'), 19), null, '有一行短一个字符也不认');
+  eq(parseVisionGrid(rows.join('\n'), 9), null, '按 9 路要就对不上');
+  eq(parseVisionGrid('棋盘大概是空的，我没看清。', 19), null, '一句解释里没有棋盘');
+  eq(parseVisionGrid('', 19), null, '空正文不认');
+  eq(parseVisionGrid(rows.join('\n'), 0), null, '路数不合法不认');
+}
+
+section('视觉接口：地址写得对不对，一眼看出来');
+{
+  eq(endpointHint(''), null, '空地址不啰嗦');
+  eq(endpointHint('https://api.deepseek.com/v1/chat/completions'), null, '标准写法没意见');
+  ok(Boolean(endpointHint('api.deepseek.com/v1/chat/completions')), '少 http 的要提醒');
+  ok(Boolean(endpointHint('https://api.deepseek.com/v1')), '不是 chat/completions 的要提醒');
+}
+
+section('视觉接口：请求怎么发、错怎么报');
+{
+  const base = { endpoint: 'https://example.com/v1/chat/completions', model: 'm1', apiKey: 'sk-x', imageDataUrl: 'data:image/png;base64,AAA', size: 19 };
+
+  // 请求体：模型名、图、以及"只输出 N 行"的交代
+  const body = visionBody(base) as { model: string; max_tokens: number; messages: Array<{ content: Array<{ type: string; text?: string; image_url?: { url: string } }> }> };
+  eq(body.model, 'm1', '带上模型名');
+  eq(body.max_tokens, 4000, '给正文留够长度');
+  eq(body.messages[0].content[1].image_url?.url, base.imageDataUrl, '图原样带上');
+  eq(body.messages[0].content[0].text, visionPrompt(19), '提示词就是那句"只输出 19 行"');
+  ok(visionPrompt(13).includes('13 行'), '13 路的提示词说的是 13 行');
+  eq(body.messages[0].content.length, 2, '一条文字一条图');
+
+  const reply = (payload: unknown, status = 200) =>
+    Promise.resolve(new Response(typeof payload === 'string' ? payload : JSON.stringify(payload), { status }));
+
+  // 成功
+  let seen: { url: string; init: RequestInit } | null = null;
+  const okFetch = (url: string, init: RequestInit): Promise<Response> => {
+    seen = { url, init };
+    return reply({ choices: [{ message: { content: '  .X.\n.O.  ' } }] });
+  };
+  const good = await visionChat(base, { fetchImpl: okFetch });
+  eq(good.ok, true, '正常返回算成功');
+  eq(good.content, '.X.\n.O.', '正文两头空白去掉');
+  eq(seen?.url, base.endpoint, '发到设置里那个地址');
+  {
+    const h = (seen?.init.headers ?? {}) as Record<string, string>;
+    eq(h.Authorization, 'Bearer sk-x', '带上密钥');
+    eq(h['Content-Type'], 'application/json', '声明是 JSON');
+    eq(seen?.init.method, 'POST', '用 POST');
+  }
+
+  // 键和地址两头的空格要抹掉
+  const trimmed = await visionChat({ ...base, endpoint: '  https://example.com/x  ', apiKey: '  sk-y  ' }, { fetchImpl: okFetch });
+  eq(trimmed.ok, true, '前后带空格的地址和密钥照样能发');
+  eq(seen?.url, 'https://example.com/x', '地址两端空格去掉');
+  eq((seen?.init.headers as Record<string, string>).Authorization, 'Bearer sk-y', '密钥两端空格去掉');
+
+  // 没填全
+  const noEndpoint = await visionChat({ ...base, endpoint: '  ' }, { fetchImpl: okFetch });
+  eq(noEndpoint.ok, false, '地址空的直接不发');
+  ok(String(noEndpoint.error).includes('地址'), '说清楚是地址的问题', noEndpoint.error);
+  const noKey = await visionChat({ ...base, apiKey: '' }, { fetchImpl: okFetch });
+  ok(String(noKey.error).includes('密钥'), '说清楚是密钥的问题', noKey.error);
+  const noImage = await visionChat({ ...base, imageDataUrl: '' }, { fetchImpl: okFetch });
+  ok(String(noImage.error).includes('图片'), '说清楚是没有图片', noImage.error);
+
+  // 连不上、超时、401、不是 JSON、没有正文，各是各的说法
+  const boom = (e: unknown) => (): Promise<Response> => Promise.reject(e);
+  const netErr = await visionChat(base, { fetchImpl: boom(new TypeError('fetch failed')) });
+  eq(netErr.ok, false, '连不上算失败');
+  ok(String(netErr.error).includes('fetch failed'), '把网络层的原话带出来', netErr.error);
+  const aborted = Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
+  const timedOut = await visionChat(base, { fetchImpl: boom(aborted), timeoutMs: 9000 });
+  ok(String(timedOut.error).includes('9 秒'), '超时说的是等了多少秒', timedOut.error);
+
+  const unauth = await visionChat(base, { fetchImpl: () => reply({ error: { message: 'Authentication Fails' } }, 401) });
+  eq(unauth.ok, false, '401 算失败');
+  eq(unauth.status, 401, '状态码带回来');
+  ok(String(unauth.body).includes('Authentication Fails'), '服务端原话带回来', unauth.body);
+
+  const html = await visionChat(base, { fetchImpl: () => reply('<html>网关错误</html>') });
+  ok(String(html.error).includes('不是 JSON'), '返回网页而不是 JSON 时说得明白', html.error);
+  ok(String(html.body).includes('网关错误'), '顺手把原文前几个字带上', html.body);
+
+  const empty = await visionChat(base, { fetchImpl: () => reply({ choices: [{ message: { content: '   ' }, finish_reason: 'length' }] }) });
+  ok(String(empty.error).includes('截断'), '被截断时说清是被截断了', empty.error);
+  const silent = await visionChat(base, { fetchImpl: () => reply({ choices: [{ message: {} }] }) });
+  ok(String(silent.error).includes('没有返回正文'), '没正文时说不清就直说', silent.error);
+  const noChoice = await visionChat(base, { fetchImpl: () => reply({}) });
+  eq(noChoice.ok, false, '连 choices 都没有也算失败');
 }
 
 console.log(`\n界面逻辑自测：${passed} 项通过，${failed} 项失败`);

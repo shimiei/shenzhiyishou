@@ -1573,3 +1573,221 @@ progress::-webkit-progress-value {
   color: var(--accent-text);
   font-size: 12px;
 }
+
+/* 棋谱树上标"这一手是谁下的"，以及复盘给的损失分 */
+.tree-row .who-tag {
+  font-size: 10px;
+  border-radius: 3px;
+  padding: 0 3px;
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+}
+
+.tree-row .who-tag.ai {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.tree-row .loss-tag {
+  font-size: 10px;
+  border-radius: 3px;
+  padding: 0 3px;
+  color: #fff;
+  background: #d9903a;
+}
+
+.tree-row .loss-tag.mistake {
+  background: #d9773a;
+}
+
+.tree-row .loss-tag.blunder {
+  background: #d9574c;
+}
+
+/* 复盘：曲线、进度、列表 */
+.rev-progress {
+  flex: 1;
+  min-width: 80px;
+  max-width: 240px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.rev-progress i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.rev-curve {
+  width: 100%;
+  height: 132px;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: crosshair;
+  display: block;
+}
+
+.rev-curve-black {
+  fill: rgba(20, 24, 30, 0.55);
+}
+
+.rev-curve-white {
+  fill: rgba(240, 240, 235, 0.16);
+}
+
+.rev-curve-mid {
+  stroke: var(--border);
+  stroke-dasharray: 4 4;
+}
+
+.rev-curve-area-b {
+  fill: rgba(255, 255, 255, 0.14);
+}
+
+.rev-curve-area-w {
+  fill: rgba(0, 0, 0, 0.18);
+}
+
+.rev-curve-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.rev-curve-mark {
+  stroke: var(--text);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.rev-dot {
+  stroke: rgba(0, 0, 0, 0.35);
+  stroke-width: 0.6;
+}
+
+.rev-dot.inaccuracy {
+  fill: #d9903a;
+}
+
+.rev-dot.mistake {
+  fill: #d9773a;
+}
+
+.rev-dot.blunder {
+  fill: #d9574c;
+}
+
+.rev-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.rev-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.rev-row:hover {
+  background: var(--panel-2);
+}
+
+.rev-row.active {
+  background: var(--accent-soft);
+}
+
+.rev-row .rev-color {
+  width: 16px;
+  text-align: center;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.rev-row .rev-color.b {
+  background: #1b1f26;
+  color: #eee;
+}
+
+.rev-row .rev-color.w {
+  background: #e8e8e2;
+  color: #1b1f26;
+}
+
+.rev-row .rev-ply {
+  width: 30px;
+  text-align: right;
+  color: var(--text-faint);
+  font-family: var(--mono);
+}
+
+.rev-row .rev-vertex {
+  width: 52px;
+  font-family: var(--mono);
+}
+
+.rev-row .rev-tag {
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+}
+
+.rev-row .rev-tag.inaccuracy {
+  color: #d9903a;
+  border-color: #d9903a;
+}
+
+.rev-row .rev-tag.mistake {
+  color: #e08a4a;
+  border-color: #e08a4a;
+}
+
+.rev-row .rev-tag.blunder {
+  color: #d9574c;
+  border-color: #d9574c;
+}
+
+.rev-row .rev-tag.best {
+  color: #4caf62;
+  border-color: #4caf62;
+}
+
+.rev-row .rev-loss {
+  color: var(--text-faint);
+  min-width: 88px;
+}
+
+.rev-row .rev-best {
+  color: var(--text-faint);
+  font-family: var(--mono);
+}
+
+.rev-row .rev-src {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.rev-detail {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.rev-detail-head {
+  font-weight: 600;
+}

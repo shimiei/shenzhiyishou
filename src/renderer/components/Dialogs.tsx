@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../state/store';
 import { Board } from './Board';
-import { colorToPlayAt, infoFromTree, moveAtSized, positionAt, propNum } from '../core/sgf/tree';
+import { colorToPlayAt, infoFromTree, moveAtSized, moveSourceOf, positionAt, propNum } from '../core/sgf/tree';
+import { GRADE_LABEL, problemMoves, toPercent } from '../core/review/review';
+import { LAST_MOVE_MARK_OPTIONS } from '../core/board/marks';
+import { endpointHint } from '../core/vision';
 import { BLACK, WHITE, type AnalysisSnapshot, type AppSettings, type ModelEntry } from '../../shared/types';
 import type { DownloadProgress } from '../../shared/protocol';
 
@@ -434,8 +437,303 @@ function LibraryDialog({ onClose }: { onClose: () => void }): React.ReactElement
   );
 }
 
-function ScoreDialog({ onClose }: { onClose: () => void }): React.ReactElement {
+/**
+ * 复盘窗口：左边是整局的评点，右边跟着看选中的那一手。
+ *
+ * 曲线横轴是手数，纵轴是黑棋胜率（黑在上、白在下），和大多数围棋软件的读法一致；
+ * 点一下曲线或列表就把右边的小棋盘换到那个局面，双击直接跳到主棋盘上去。
+ */
+function ReviewDialog({ onClose }: { onClose: () => void }): React.ReactElement {
   const tree = useStore((s) => s.tree);
+  const moves = useStore((s) => s.reviewMoves);
+  const summary = useStore((s) => s.reviewSummary);
+  const running = useStore((s) => s.reviewRunning);
+  const done = useStore((s) => s.reviewDone);
+  const total = useStore((s) => s.reviewTotal);
+  const stopped = useStore((s) => s.reviewStopped);
+  const error = useStore((s) => s.reviewError);
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const startReview = useStore((s) => s.startReview);
+  const stopReview = useStore((s) => s.stopReview);
+  const clearReview = useStore((s) => s.clearReview);
+  const goto = useStore((s) => s.goto);
+  const gotoProblem = useStore((s) => s.gotoProblem);
+  const size = propNum(tree, tree.root, 'SZ', 19);
+
+  const [onlyProblems, setOnlyProblems] = useState(true);
+  const [sel, setSel] = useState<number | null>(null);
+
+  /** 曲线上的点：第一手之前的胜率，加上每一手之后的胜率。 */
+  const curve = useMemo(
+    () => (moves.length ? [moves[0].winrateBefore, ...moves.map((m) => m.winrateAfter)] : []),
+    [moves]
+  );
+  const problems = useMemo(() => problemMoves(moves), [moves]);
+  const rows = onlyProblems ? problems : moves;
+
+  /** 打开时选中最值得看的那一手：先看最大的一处，没有就从头开始。 */
+  useEffect(() => {
+    if (sel !== null) return;
+    const pick = summary.worst && summary.worst.loss > 0 ? summary.worst : moves[0] ?? null;
+    if (pick) setSel(pick.nodeId);
+  }, [moves, summary, sel]);
+
+  /** 人和机器各下了几手、平均亏多少。摆出来的子和导入的棋谱没有来源，不计入。 */
+  const byWho = useMemo(() => {
+    const acc = { human: { n: 0, loss: 0 }, ai: { n: 0, loss: 0 } };
+    for (const m of moves) {
+      const src = moveSourceOf(tree, m.nodeId);
+      if (!src) continue;
+      acc[src].n += 1;
+      acc[src].loss += Math.max(0, m.loss);
+    }
+    return acc;
+  }, [moves, tree]);
+
+  const selMove = rows.find((m) => m.nodeId === sel) ?? moves.find((m) => m.nodeId === sel) ?? null;
+  const selPos = selMove ? positionAt(tree, selMove.nodeId) : positionAt(tree, tree.root);
+  const jump = (id: number): void => {
+    goto(id);
+    onClose();
+  };
+
+  const W = 660;
+  const H = 132;
+  const xy = (i: number, v: number): [number, number] => [
+    curve.length > 1 ? (i / (curve.length - 1)) * W : 0,
+    H * (1 - Math.max(0, Math.min(1, v)))
+  ];
+  const line = curve.map((v, i) => xy(i, v).join(',')).join(' ');
+  const areaTop = curve.length > 1 ? `0,0 ${line} ${W},0` : '';
+  const areaBottom = curve.length > 1 ? `0,${H} ${line} ${W},${H}` : '';
+
+  const plyToNode = (ply: number): number | null => {
+    const hit = moves.find((m) => m.ply === ply);
+    return hit ? hit.nodeId : null;
+  };
+
+  return (
+    <Shell
+      title="复盘"
+      wide
+      maxWidth={1180}
+      onClose={onClose}
+      footer={
+        <>
+          <span className="small faint">
+            {moves.length > 0
+              ? `共 ${summary.moves} 手 · 恶手 ${summary.blunder} · 失误 ${summary.mistake} · 小失误 ${summary.inaccuracy}`
+              : '还没有复盘数据'}
+          </span>
+          <div className="spacer" />
+          <button className="btn" disabled={moves.length === 0} onClick={() => gotoProblem(-1)}>
+            上一处问题
+          </button>
+          <button className="btn" disabled={moves.length === 0} onClick={() => gotoProblem(1)}>
+            下一处问题
+          </button>
+          <button
+            className="btn primary"
+            disabled={!selMove}
+            onClick={() => selMove && jump(selMove.nodeId)}
+            title="把主棋盘跳到选中的这一手，然后关掉这个窗口"
+          >
+            跳到这一手
+          </button>
+          <button className="btn ghost" onClick={onClose}>
+            关闭
+          </button>
+        </>
+      }
+    >
+      <div className="row" style={{ alignItems: 'flex-start', gap: 18 }}>
+        <div style={{ flex: 1, minWidth: 380 }}>
+          <div className="row wrap" style={{ gap: 8, alignItems: 'center' }}>
+            {running ? (
+              <>
+                <button className="btn danger" onClick={() => void stopReview()}>
+                  停下
+                </button>
+                <span className="small">
+                  正在算第 {Math.min(done + 1, total)} / {total} 个局面…
+                </span>
+                <div className="rev-progress">
+                  <i style={{ width: `${total ? Math.round((done / total) * 100) : 0}%` }} />
+                </div>
+              </>
+            ) : (
+              <>
+                <button className="btn primary" onClick={() => void startReview()}>
+                  {moves.length > 0 ? '接着算' : '开始复盘'}
+                </button>
+                {moves.length > 0 ? (
+                  <button
+                    className="btn"
+                    title="把已经算出来的结果丢掉，从第一手重新算"
+                    onClick={() => {
+                      clearReview();
+                      void startReview();
+                    }}
+                  >
+                    重算
+                  </button>
+                ) : null}
+                <label className="small" style={{ marginLeft: 6 }}>
+                  每手访问量 {settings.reviewVisits}
+                  <input
+                    type="range"
+                    min={20}
+                    max={3000}
+                    step={10}
+                    value={settings.reviewVisits}
+                    style={{ width: 130, marginLeft: 8, verticalAlign: 'middle' }}
+                    onChange={(e) => void setSettings({ reviewVisits: Number(e.target.value) })}
+                  />
+                </label>
+              </>
+            )}
+            <div className="spacer" />
+            <div className="seg">
+              <button className={'seg-item' + (onlyProblems ? ' active' : '')} onClick={() => setOnlyProblems(true)}>
+                只看问题手
+              </button>
+              <button className={'seg-item' + (!onlyProblems ? ' active' : '')} onClick={() => setOnlyProblems(false)}>
+                所有着手
+              </button>
+            </div>
+          </div>
+
+          {error ? (
+            <div className="small" style={{ color: 'var(--danger, #e05b52)', marginTop: 8 }}>
+              复盘出错：{error}
+            </div>
+          ) : stopped === 'replaced' ? (
+            <div className="small faint" style={{ marginTop: 8 }}>
+              上一轮复盘被实时分析顶掉了，已经算完的部分留着，点“接着算”可以继续。
+            </div>
+          ) : null}
+
+          {curve.length > 1 ? (
+            <svg
+              className="rev-curve"
+              viewBox={`0 0 ${W} ${H}`}
+              preserveAspectRatio="none"
+              onClick={(e) => {
+                const box = e.currentTarget.getBoundingClientRect();
+                const ratio = (e.clientX - box.left) / box.width;
+                const node = plyToNode(Math.round(ratio * (curve.length - 1)));
+                if (node) setSel(node);
+              }}
+              onDoubleClick={() => selMove && jump(selMove.nodeId)}
+            >
+              <rect x={0} y={0} width={W} height={H / 2} className="rev-curve-black" />
+              <rect x={0} y={H / 2} width={W} height={H / 2} className="rev-curve-white" />
+              <line x1={0} y1={H / 2} x2={W} y2={H / 2} className="rev-curve-mid" />
+              <polygon points={areaTop} className="rev-curve-area-b" />
+              <polygon points={areaBottom} className="rev-curve-area-w" />
+              <polyline points={line} className="rev-curve-line" />
+              {problems.map((m) => {
+                const [x, y] = xy(m.ply, m.winrateAfter);
+                const r = m.grade === 'blunder' ? 4.5 : m.grade === 'mistake' ? 3.4 : 2.6;
+                return <circle key={m.nodeId} cx={x} cy={y} r={r} className={'rev-dot ' + m.grade} />;
+              })}
+              {selMove ? (
+                <line x1={xy(selMove.ply, 0)[0]} y1={0} x2={xy(selMove.ply, 0)[0]} y2={H} className="rev-curve-mark" />
+              ) : null}
+            </svg>
+          ) : null}
+
+          <div className="small faint" style={{ margin: '4px 0 8px', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <span>上面的深色是黑棋的胜率，下面浅色是白棋</span>
+            {byWho.human.n > 0 ? (
+              <span>
+                人下的 {byWho.human.n} 手平均亏 {((byWho.human.loss / byWho.human.n) * 100).toFixed(1)} 个点
+              </span>
+            ) : null}
+            {byWho.ai.n > 0 ? (
+              <span>
+                机器下的 {byWho.ai.n} 手平均亏 {((byWho.ai.loss / byWho.ai.n) * 100).toFixed(1)} 个点
+              </span>
+            ) : null}
+          </div>
+
+          <div className="rev-list">
+            {rows.length === 0 ? (
+              <div className="empty">
+                {moves.length === 0
+                  ? '点“开始复盘”，引擎会把这一局的每一手都算一遍，然后列出亏得最多的地方。'
+                  : '这一局没有明显的问题手。'}
+              </div>
+            ) : (
+              rows.map((m) => (
+                <div
+                  key={m.nodeId}
+                  className={'rev-row' + (m.nodeId === sel ? ' active' : '')}
+                  onClick={() => setSel(m.nodeId)}
+                  onDoubleClick={() => jump(m.nodeId)}
+                  title="点一下看这一手，双击跳到主棋盘"
+                >
+                  <span className={'rev-color ' + (m.color === BLACK ? 'b' : 'w')}>{m.color === BLACK ? '黑' : '白'}</span>
+                  <span className="rev-ply">{m.ply}</span>
+                  <span className="rev-vertex">{m.vertex}</span>
+                  <span className={'rev-tag ' + m.grade}>{GRADE_LABEL[m.grade]}</span>
+                  <span className="rev-loss">{m.loss > 0.005 ? `亏 ${toPercent(m.loss)} 个点` : '不亏'}</span>
+                  <span className="rev-best">{m.bestMove && m.bestMove !== m.vertex ? `推荐 ${m.bestMove}` : ''}</span>
+                  <div className="spacer" />
+                  <span className="rev-src">
+                    {moveSourceOf(tree, m.nodeId) === 'ai' ? '机' : moveSourceOf(tree, m.nodeId) === 'human' ? '人' : ''}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div style={{ flex: '0 0 auto', width: 340 }}>
+          <Board
+            size={size}
+            position={selPos}
+            lastMove={selMove && selMove.point >= 0 ? selMove.point : null}
+            showCoords={false}
+            lastMoveMark={settings.lastMoveMark}
+            fixedBox={312}
+            interactive={false}
+            zoom={1}
+          />
+          <div className="rev-detail">
+            {selMove ? (
+              <>
+                <div className="rev-detail-head">
+                  第 {selMove.ply} 手 {selMove.color === BLACK ? '黑' : '白'} {selMove.vertex}
+                </div>
+                <div className="small">
+                  这一手之前黑棋 {toPercent(selMove.winrateBefore)}%，走完 {toPercent(selMove.winrateAfter)}%
+                </div>
+                <div className="small">
+                  {selMove.loss > 0.005
+                    ? `下棋这一方亏了 ${toPercent(selMove.loss)} 个点、${Math.abs(selMove.lossPoints).toFixed(1)} 目`
+                    : '这一手没有亏'}
+                </div>
+                {selMove.bestMove ? (
+                  <div className="small">
+                    引擎推荐 {selMove.bestMove}
+                    {selMove.rank === 1 ? '（就是这一手）' : selMove.rank > 0 ? `（这一手排第 ${selMove.rank}）` : '（这一手不在候选里）'}
+                  </div>
+                ) : null}
+                <div className="small faint">每手算到 {selMove.visits} 次访问</div>
+              </>
+            ) : (
+              <div className="small faint">选一手看看</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </Shell>
+  );
+}
+
+function ScoreDialog({ onClose }: { onClose: () => void }): React.ReactElement {  const tree = useStore((s) => s.tree);
   const current = useStore((s) => s.current);
   const analysis = useStore((s) => s.analysis);
   const updateGameInfo = useStore((s) => s.updateGameInfo);
@@ -654,6 +952,24 @@ function SettingsDialog({ onClose }: { onClose: () => void }): React.ReactElemen
             显示手数
           </label>
           <div className="field" style={{ marginTop: 10 }}>
+            <label>最后一手的标记</label>
+            {/* 六个短标签，按内容宽度排；不跟着列宽拉伸，免得右边空一大片 */}
+            <div className="seg wrap" style={{ alignSelf: 'flex-start' }}>
+              {LAST_MOVE_MARK_OPTIONS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  className={'seg-item' + (draft.lastMoveMark === value ? ' active' : '')}
+                  onClick={() => setDraft({ ...draft, lastMoveMark: value })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="hint">
+              黑子上画白点、白子上画黑点看得最轻，子多的时候容易找不着；红点、红三角不跟着棋子换色，一眼能认出来。
+            </div>
+          </div>
+          <div className="field" style={{ marginTop: 10 }}>
             <label>内置浏览器首页</label>
             <input
               value={draft.browserHome}
@@ -687,6 +1003,11 @@ function SettingsDialog({ onClose }: { onClose: () => void }): React.ReactElemen
             <input type="range" min={20} max={8000} step={20} value={draft.analyzeVisits} onChange={(e) => setDraft({ ...draft, analyzeVisits: Number(e.target.value) })} />
           </div>
           <div className="field">
+            <label>复盘每手访问量：{draft.reviewVisits}</label>
+            <input type="range" min={20} max={3000} step={10} value={draft.reviewVisits} onChange={(e) => setDraft({ ...draft, reviewVisits: Number(e.target.value) })} />
+            <div className="hint">复盘要把每一手都算一遍，一整局几百手。核显上先用 100 到 200，跑得动再加。</div>
+          </div>
+          <div className="field">
             <label>搜索线程：{draft.threads}</label>
             <input type="range" min={1} max={Math.max(2, (info?.cpu.cores ?? 8))} step={1} value={draft.threads} onChange={(e) => setDraft({ ...draft, threads: Number(e.target.value) })} />
             <div className="hint">核显后端线程越多不一定越快，1 到 4 之间试一下手感。</div>
@@ -706,7 +1027,23 @@ function SettingsDialog({ onClose }: { onClose: () => void }): React.ReactElemen
       <h4 style={{ margin: '18px 0 8px' }}>图片识别</h4>
       <div className="small faint" style={{ marginBottom: 10, lineHeight: 1.7 }}>
         默认用本机算法识别，离线、免费、不传图。下面的接口是可选的备用方案：留空就一直用本地识别；
-        填好之后，“从图片识别棋谱”里会多一个用大模型识别的按钮，适合拍照变形比较厉害的图。
+        接口地址和密钥都填上之后，“从图片识别棋谱”里那个用大模型识别的按钮就能用了，适合拍照变形比较厉害的图。
+        <br />
+        当前状态：
+        {draft.vision.endpoint.trim() && visionKey.trim() ? (
+          endpointHint(draft.vision.endpoint) ? (
+            <span style={{ color: '#d9903a' }}>{endpointHint(draft.vision.endpoint)}</span>
+          ) : (
+            <span style={{ color: '#4caf62' }}>已填好，可以直接用</span>
+          )
+        ) : (
+          <span style={{ color: '#d9903a' }}>
+            还差{!draft.vision.endpoint.trim() ? '接口地址' : ''}
+            {!draft.vision.endpoint.trim() && !visionKey.trim() ? '和' : ''}
+            {!visionKey.trim() ? '密钥' : ''}
+          </span>
+        )}
+        {draft.vision.endpoint.trim() && visionKey.trim() && !draft.vision.model.trim() ? '（模型名留空的话，服务端会用它的默认模型）' : ''}
       </div>
       <div className="grid-2">
         <div className="field">
@@ -779,6 +1116,7 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }): React.ReactEleme
     ['空格', '让 AI 替现行棋方走一手'],
     ['H', '提示现行棋方一手（标明黑白，不落子）'],
     ['A', '开始或暂停实时分析'],
+    ['R', '打开复盘'],
     ['E', '形势判断与数子'],
     ['C', '显示或隐藏坐标'],
     ['N', '显示或隐藏手数'],
@@ -828,6 +1166,8 @@ export function DialogsHost({ snapshot }: { snapshot: AnalysisSnapshot | null })
       return <LibraryDialog onClose={close} />;
     case 'score':
       return <ScoreDialog onClose={close} />;
+    case 'review':
+      return <ReviewDialog onClose={close} />;
     case 'settings':
       return <SettingsDialog onClose={close} />;
     case 'about':

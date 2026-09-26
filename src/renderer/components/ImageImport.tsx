@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { recognizeBoard, type ImageBox, type RecognizeResult } from '../core/cv/recognize';
+import { parseVisionGrid } from '../core/vision';
 import { BLACK, WHITE } from '../../shared/types';
 
 const MAX_W = 720;
@@ -198,54 +199,46 @@ export function ImageImportDialog(): React.ReactElement | null {
 
   const visionRecognize = async (): Promise<void> => {
     const v = settings.vision;
-    if (!v.enabled || !v.endpoint || !v.apiKey) {
-      setVisionMsg('还没有配置视觉大模型接口。到“设置 → 图片识别”里填好接口地址、模型名和密钥之后就能用。');
+    const endpoint = v.endpoint.trim();
+    const apiKey = v.apiKey.trim();
+    /*
+     * 判断标准是"填没填"，不是某个启用开关。以前这里还要求一个 enabled 标记，
+     * 而设置里根本没有能打开它的地方，于是接口填得再全也只会被告知"还没有配置"。
+     */
+    if (!endpoint || !apiKey) {
+      setVisionMsg(
+        `还没有配置视觉大模型接口：${!endpoint ? '接口地址' : ''}${!endpoint && !apiKey ? '和' : ''}${!apiKey ? '密钥' : ''}还是空的。到“设置 → 图片识别”里填好就能用。`
+      );
       return;
     }
     setVisionMsg('正在请求视觉大模型…');
-    try {
-      const body = {
-        model: v.model,
-        temperature: 0,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `这是一张围棋棋盘的照片或截图。棋盘是 ${size} 路。请只输出 ${size} 行，每行 ${size} 个字符，用 . 表示空点，X 表示黑子，O 表示白子，不要任何解释和多余文字。`
-              },
-              { type: 'image_url', image_url: { url: image.dataUrl } }
-            ]
-          }
-        ]
-      };
-      const res = await fetch(v.endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${v.apiKey}` },
-        body: JSON.stringify(body)
-      });
-      const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-      const text = json.choices?.[0]?.message?.content ?? '';
-      const rows = text
-        .split(/\r?\n/)
-        .map((line) => line.replace(/[^XO.]/gi, '').toUpperCase())
-        .filter((line) => line.length === size);
-      if (rows.length !== size) {
-        setVisionMsg('大模型返回的格式不对，没能解析出棋盘。请重试，或者继续手工修正。');
-        return;
-      }
-      const next = new Array(size * size).fill(0);
-      rows.forEach((row, y) => {
-        for (let x = 0; x < size; x++) {
-          next[y * size + x] = row[x] === 'X' ? BLACK : row[x] === 'O' ? WHITE : 0;
-        }
-      });
-      setStones(next);
-      setVisionMsg('已采用大模型识别结果，请再核对一遍。');
-    } catch (e) {
-      setVisionMsg('请求失败：' + (e instanceof Error ? e.message : String(e)));
+    /*
+     * 请求交给主进程发。界面自己的 CSP 是 connect-src 'self'，在这里直接 fetch
+     * 外部接口只会得到一句 Failed to fetch，看着像地址写错了，其实压根没出去。
+     */
+    const res = await window.api.vision.recognize({
+      endpoint,
+      model: v.model.trim(),
+      apiKey,
+      imageDataUrl: image.dataUrl,
+      size
+    });
+    if (!res.ok) {
+      /*
+       * 把服务端的话原样带出来。以前看不到底返回了什么，401、地址写错、
+       * 模型名不存在、接口不收图片，全都被说成"返回的格式不对"。
+       */
+      if (res.status) setVisionMsg(`接口返回 ${res.status}${res.body ? '：' + res.body : ''}`);
+      else setVisionMsg(`没问成：${res.error ?? '原因不明'}${res.body ? '。服务端说：' + res.body : ''}`);
+      return;
     }
+    const grid = parseVisionGrid(res.content ?? '', size);
+    if (!grid) {
+      setVisionMsg(`返回的内容里没有 ${size} 行棋盘。模型说的是：${(res.content ?? '').slice(0, 200)}`);
+      return;
+    }
+    setStones(grid);
+    setVisionMsg('已采用大模型识别结果，请再核对一遍。');
   };
 
   return (
