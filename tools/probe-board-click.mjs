@@ -7,8 +7,9 @@ const PORT = process.argv[4] ?? process.env.CDP_PORT ?? '9223';
 const col = Number(process.argv[2] ?? 3);
 const row = Number(process.argv[3] ?? 3);
 
-const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
-const pick = list.find((t) => t.type === 'page' && t.url.startsWith('file:'));
+import { fetchTargets, pickAppPage } from './app-target.mjs';
+
+const pick = pickAppPage(await fetchTargets(PORT));
 if (!pick) throw new Error('没找到应用窗口');
 const ws = new WebSocket(pick.webSocketDebuggerUrl);
 let id = 0;

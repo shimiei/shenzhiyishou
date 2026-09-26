@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, rmSync, mkdirSync
 import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pickAppPage } from './app-target.mjs';
 
 const PORT = process.argv[2] ?? '9223';
 const EXE = (process.argv.find((a) => a.startsWith('--exe=')) ?? '').slice(6);
@@ -73,8 +74,7 @@ function launch() {
 
 async function connect() {
   const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
-  const target = list.find((t) => t.type === 'page');
-  if (!target) throw new Error('没找到页面目标：' + list.map((t) => `${t.type} ${t.url}`).join(' | '));
+  const target = pickAppPage(list);
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;
   const pending = new Map();

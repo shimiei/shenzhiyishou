@@ -7,21 +7,13 @@
  *   node tools/cdp.mjs watch <毫秒>   监听控制台报错
  */
 import { readFileSync, writeFileSync } from 'node:fs';
+import { fetchTargets, pickAppPage } from './app-target.mjs';
 
 const PORT = process.env.CDP_PORT ?? '9222';
 
+/** 挑主页面（叠层那个 overlay.html 也是 file: 页面目标，不能按"第一个"挑）。 */
 async function pickPage() {
-  const res = await fetch(`http://127.0.0.1:${PORT}/json/list`);
-  const list = await res.json();
-  const pages = list.filter((t) => !t.url.startsWith('devtools://'));
-  if (process.env.CDP_TARGET) {
-    const hit = pages.find((t) => t.url.includes(process.env.CDP_TARGET));
-    if (!hit) throw new Error('没有匹配 ' + process.env.CDP_TARGET + ' 的目标，现有: ' + pages.map((p) => p.url).join(', '));
-    return hit;
-  }
-  const page = pages.find((t) => t.type === 'page');
-  if (!page) throw new Error('没有找到页面目标');
-  return page;
+  return pickAppPage((await fetchTargets(PORT)).filter((t) => !t.url.startsWith('devtools://')));
 }
 
 function connect(url) {

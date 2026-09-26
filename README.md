@@ -41,6 +41,8 @@ node tools/cv-check.mjs 图片 --answer 答案.sgf   # 图片识别的准确率�
 
 跑起来的实例也能从外面看：`node tools/devtest.mjs --remote-debugging-port=9223` 起一个独立配置的验收实例，再用 `node tools/live-probe.mjs "<表达式>"` 在它的界面里求值，截图和点击见 `tools/cdp.mjs`。
 
+这几个工具挑的永远是 `index.html` 那个页面目标（`tools/app-target.mjs`）：固定窗口那一档会多出一个落点叠层窗口，它也是 `file:` 页面目标（`overlay.html`），标过一次点就一直在，按“第一个页面”“第一个 file:”去挑就会挑到它上面，报出来是一句莫名其妙的 `Cannot read properties of undefined`。
+
 打包之后想验真正打出来的那一份：`npm run dist` 之后跑 `node tools/pkgtest-refresh.mjs`，它把 asar 解一份到 `%LOCALAPPDATA%\Temp\szys-pkg`，只改用户目录那一行的名字，于是那份副本和用户正在用的安装版可以同时开着，互不干扰。
 
 按真界面点击走的验收驱动有三份，都要一份能连 CDP 的实例：

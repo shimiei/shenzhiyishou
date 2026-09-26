@@ -204,6 +204,23 @@ if (-not $p -or $p.MainWindowHandle -eq 0) { 'none' } else {
   return { win: { x, y, w, h }, client: { x: cx, y: cy, w: cw, h: ch } };
 }
 
+/** 把一个窗口提到最上面。只有明确说了"目标窗口得露出来"才会用到（见下面那面旗）。 */
+function raiseWindowByPid(pid) {
+  return ps(`
+Add-Type @'
+using System;using System.Runtime.InteropServices;
+public class R2 {
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);
+}
+'@
+$p = Get-Process -Id ${Math.round(pid)} -ErrorAction SilentlyContinue
+if (-not $p -or $p.MainWindowHandle -eq 0) { 'none' } else {
+  # 不提位置、不改大小、不抢前台，只换 z 序：插到 HWND_TOP（0x0053 = 不改位置/不改大小/不激活/显示）
+  if ([R2]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, 0, 0, 0, 0, 0x0053)) { 'ok' } else { 'fail' }
+}
+`);
+}
+
 /** 摆一个窗口（按 pid 找它的主窗口）。假客户端收不到标准输入，所以挪窗、改大小都走 Win32。 */
 function moveWindowByPid(pid, x, y, w, h) {
   return ps(`
@@ -425,6 +442,19 @@ const main = async () => {
   const self = winGeom(fake.pid);
   console.log(`  窗口：应用读到 ${JSON.stringify(win.win ?? null)} 客户端区 ${JSON.stringify(win.client ?? null)}`);
   console.log(`  窗口：这边另读一遍 ${JSON.stringify(self?.win ?? null)} 客户端区 ${JSON.stringify(self?.client ?? null)}`);
+
+  /*
+   * 真点那几项要目标窗口露在最上面。默认不碰 z 序：假客户端自己起的时候是"不打扰"的摆法
+   * （压到最底层），屏幕上有别人的窗口时，这几项就标成待验。要是屏幕空着、或者明知道
+   * 自己这台机器上没人在用，设 SZYS_TARGET_ON_TOP=1，这一步会把假客户端提到最上面，
+   * 让那几项真跑起来。提的是我起的那个假客户端，不是别人的窗口。
+   */
+  const wantOnTop = process.env.SZYS_TARGET_ON_TOP === '1';
+  if (wantOnTop) {
+    const raised = raiseWindowByPid(fake.pid);
+    await sleep(600);
+    console.log(`  按 SZYS_TARGET_ON_TOP=1 把假客户端提到最上面：${raised}`);
+  }
 
   check('画面来源是"固定窗口"', base.src === 'window', `actual=${base.src}`);
   check('记住的是那个窗口', base.proc !== '' || base.title !== '', `proc=${base.proc} title=${base.title}`);

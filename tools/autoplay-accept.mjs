@@ -14,6 +14,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
+import { pickAppPage } from './app-target.mjs';
 
 const PORT = process.argv[2] ?? '9223';
 const SHOT_DIR = process.env.LOCALAPPDATA + '\\Temp';
@@ -89,7 +90,7 @@ if ($p) { [W]::ShowWindow($p.MainWindowHandle, 9) | Out-Null; [W]::SetWindowPos(
 };
 
 const main = async () => {
-  const app = await connect((list) => list.find((t) => t.type === 'page' && t.url.startsWith('file:')));
+  const app = await connect((list) => pickAppPage(list));
   const clickBtn = (text) => `(() => {
     const b = [...document.querySelectorAll('.toolbar button')].find((x) => x.textContent.trim() === ${JSON.stringify(text)});
     if (!b) return false;

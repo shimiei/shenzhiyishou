@@ -3,12 +3,10 @@
  * 用法：node tools/live-probe.mjs "<表达式>"  [端口]
  * 表达式在渲染进程里求值，返回值的 JSON 会打出来。
  */
+import { fetchTargets, pickAppPage } from './app-target.mjs';
+
 const PORT = process.argv[3] ?? process.env.CDP_PORT ?? '9223';
-const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
-const pick = process.env.CDP_TARGET
-  ? list.find((t) => (t.url + t.title).includes(process.env.CDP_TARGET))
-  : list.find((t) => t.type === 'page' && t.url.startsWith('file:'));
-if (!pick) throw new Error('没找到目标，现有：' + list.map((t) => t.type + ' ' + t.url.slice(0, 60)).join(' | '));
+const pick = pickAppPage(await fetchTargets(PORT));
 const ws = new WebSocket(pick.webSocketDebuggerUrl);
 let id = 0;
 const pending = new Map();

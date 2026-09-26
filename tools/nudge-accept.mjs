@@ -11,6 +11,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
+import { pickAppPage } from './app-target.mjs';
 
 const PORT = process.argv[2] ?? '9223';
 // 装机版那一份的窗口要按路径挑，别把用户自己开着的那份也算进来（用 SZYS_WIN_PATH 给个路径片段）
@@ -28,8 +29,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function connect() {
   const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
-  const page = list.find((t) => t.type === 'page' && !t.url.startsWith('devtools'));
-  if (!page) throw new Error('没有找到页面目标');
+  const page = pickAppPage(list.filter((t) => !t.url.startsWith('devtools')));
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((res, rej) => {
     ws.addEventListener('open', res);
