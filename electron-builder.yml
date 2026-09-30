@@ -1,6 +1,6 @@
 appId: com.shenzhiyishou.app
 productName: 神之一手
-copyright: © 2026
+copyright: © 2026 shimiei
 directories:
   output: release
   buildResources: build
@@ -12,6 +12,12 @@ files:
   - '!dist/*.mjs'
   - '!dist/main/*.devtest.js'
 extraResources:
+  # 本项目的 MIT 许可与第三方声明（KataGo 网络的许可要求随附声明，Electron 与
+  # Chromium 的声明由 electron-builder 自己放在 exe 旁边）跟着安装包一起走。
+  - from: LICENSE
+    to: licenses/LICENSE.txt
+  - from: THIRD-PARTY-NOTICES.md
+    to: licenses/THIRD-PARTY-NOTICES.md
   - from: engine
     to: engine
     filter:

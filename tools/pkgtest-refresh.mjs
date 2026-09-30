@@ -64,7 +64,8 @@ if (existsSync(join(dest, 'resources', 'app.asar'))) {
   process.exit(1);
 }
 
-for (const dir of ['engine', 'models']) {
+// 引擎、网络、许可声明这三样都在 asar 外面，一起搬过去，让副本的目录样子跟装出来的那份一样
+for (const dir of ['engine', 'models', 'licenses']) {
   const from = join(unpacked, 'resources', dir);
   if (existsSync(from)) {
     rmSync(join(dest, 'resources', dir), { recursive: true, force: true });

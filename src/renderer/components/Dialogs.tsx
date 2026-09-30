@@ -1068,6 +1068,11 @@ function AboutDialog({ onClose }: { onClose: () => void }): React.ReactElement {
           <br />
           识别算法与规则引擎均为本机运行，不联网、不上传任何棋谱。
         </div>
+        <div className="small faint" style={{ marginTop: 12, lineHeight: 2 }}>
+          用到的第三方：Electron 与 Chromium、React、zustand、KataGo 引擎与它的网络。
+          <br />
+          完整声明放在安装目录的 resources/licenses/ 里，也就是本项目的 MIT 许可与第三方组件与许可两份；开发时看仓库根目录的 LICENSE 与 THIRD-PARTY-NOTICES.md。
+        </div>
       </div>
     </Shell>
   );
