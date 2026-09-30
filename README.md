@@ -1,3 +1,11 @@
+<div align="center">
+
+<img src="docs/shots/banner.png" alt="神之一手：和 AI 下棋、看棋、改棋，也能从图片和网页里把棋谱捡回来" width="880">
+
+<a href="https://github.com/shimiei/shenzhiyishou/releases/latest"><img src="https://img.shields.io/badge/release-0.1.1-d9a441?style=flat-square&labelColor=1b2027" alt="最新发布 0.1.1"></a> <img src="https://img.shields.io/badge/platform-Windows%20x64-2b3138?style=flat-square&labelColor=1b2027" alt="Windows x64"> <img src="https://img.shields.io/badge/license-MIT-2b3138?style=flat-square&labelColor=1b2027" alt="MIT 许可"> <img src="https://img.shields.io/badge/engine-KataGo%201.18.1-2b3138?style=flat-square&labelColor=1b2027" alt="KataGo 1.18.1">
+
+</div>
+
 # 神之一手
 
 Windows 上的围棋程序：和 AI 下棋、看棋、改棋，也能从图片和网页里把棋谱捡回来。
@@ -73,7 +81,7 @@ npm start            # 编译后直接启动（开发用）
 npm run dist         # 出安装包和便携版，产物在 release/
 ```
 
-图标由 `python tools/make-icon.py` 生成，改了图要重新跑一次。
+图标由 `python tools/make-icon.py` 生成，改了图要重新跑一次。README 顶上那张题图是 `tools/make-banner.ps1` 画的（Windows PowerShell 直接跑，配色照抄程序主题，字体用 Noto Serif SC 与 Microsoft YaHei UI），改完也重新跑一次。
 
 自测脚本，改完规则、识别算法或窗口逻辑先跑一遍：
 
