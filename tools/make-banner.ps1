@@ -159,10 +159,10 @@ $g.FillRectangle($line, [float](($W - $lineW) / 2), [float]347, $lineW, $lineH)
 $line.Dispose()
 Add-Glow $g ($W / 2) 350 220 40 $accent 70 18
 
-$subFont = New-Font 'Microsoft YaHei UI' 36 ([System.Drawing.FontStyle]::Regular)
+$subFont = New-Font 'Microsoft YaHei UI' 33 ([System.Drawing.FontStyle]::Regular)
 $subBrush = New-Object System.Drawing.SolidBrush (New-Rgba 255 156 176 192)
-$g.DrawString('和 AI 下棋、看棋、改棋，也能从图片和网页里把棋谱捡回来。', $subFont, $subBrush,
-  (New-Object System.Drawing.RectangleF(0, 392, $W, 60)), $fmt)
+$g.DrawString('KataGo v1.18.1 · 本地棋盘识别 · 网页与客户端双向同步 · 完整 SGF', $subFont, $subBrush,
+  (New-Object System.Drawing.RectangleF(0, 394, $W, 60)), $fmt)
 $subBrush.Dispose(); $subFont.Dispose()
 
 $g.Dispose()
