@@ -2,17 +2,19 @@
 
 <img src="docs/shots/banner.png" alt="神之一手" width="880">
 
-<a href="https://github.com/shimiei/shenzhiyishou/releases/latest"><img src="https://img.shields.io/badge/release-0.1.1-b8860b?style=flat-square&labelColor=1b2027" alt="最新发布 0.1.1"></a> <img src="https://img.shields.io/badge/platform-Windows%20x64-2b3138?style=flat-square&labelColor=1b2027" alt="Windows x64"> <img src="https://img.shields.io/badge/license-MIT-2b3138?style=flat-square&labelColor=1b2027" alt="MIT 许可"> <img src="https://img.shields.io/badge/engine-KataGo%201.18.1-2b3138?style=flat-square&labelColor=1b2027" alt="KataGo 1.18.1"> <img src="https://img.shields.io/badge/electron-33-2b3138?style=flat-square&labelColor=1b2027" alt="Electron 33"> <img src="https://img.shields.io/badge/tests-709%20assertions-2b3138?style=flat-square&labelColor=1b2027" alt="709 项自测断言">
+<a href="https://github.com/shimiei/shenzhiyishou/releases/latest"><img src="https://img.shields.io/badge/release-0.1.1-b8860b?style=flat-square&labelColor=1b2027" alt="最新发布 0.1.1"></a> <img src="https://img.shields.io/badge/ai-%E6%9C%AC%E5%9C%B0%E6%8E%A8%E7%90%86-2b3138?style=flat-square&labelColor=1b2027" alt="AI 本地推理"> <img src="https://img.shields.io/badge/engine-KataGo%201.18.1-2b3138?style=flat-square&labelColor=1b2027" alt="KataGo 1.18.1"> <img src="https://img.shields.io/badge/platform-Windows%20x64-2b3138?style=flat-square&labelColor=1b2027" alt="Windows x64"> <img src="https://img.shields.io/badge/license-MIT-2b3138?style=flat-square&labelColor=1b2027" alt="MIT 许可"> <img src="https://img.shields.io/badge/tests-709%20assertions-2b3138?style=flat-square&labelColor=1b2027" alt="709 项自测断言">
 
 </div>
 
 # 神之一手
 
-Windows 桌面围棋程序，全本地运行，不需要联网也不需要账号。外壳是 Electron 33 + TypeScript + React，运行时零第三方依赖；引擎是随包分发的 KataGo v1.18.1，由自写的 GTP 客户端驱动；棋盘识别是一条本地实现的机器视觉管线，不依赖联网模型；内置浏览器与程序之外的原生客户端窗口都能与本地局面双向同步落子；棋谱按完整 SGF 编辑。
+Windows 桌面围棋程序。AI 与全部功能都在本地运行，不需要联网、不需要账号，也不调用云端服务。外壳是 Electron 33 + TypeScript + React，运行时零第三方依赖；AI 来自随包分发的 KataGo v1.18.1，由自写的 GTP 客户端驱动，对局与分析分成两个引擎进程，双后端可切、网络可换；棋盘识别是一条本地实现的机器视觉管线；内置浏览器与程序之外的原生客户端窗口都能与本地局面双向同步落子；棋谱按完整 SGF 编辑。
 
 核心能力：
 
-- 引擎与棋力。KataGo v1.18.1，GTP over stdio。对局与分析运行在两个独立的引擎进程上，避免争夺同一块 GPU；OpenCL 与 eigenavx2（纯 CPU）双后端，启动时自动挑选。随包只带 4.7 MB 的 b6c96，b18c384nbt（93 MB，约 2630 万参数）、b28c512nbt（259 MB）与人类棋风网络 humanv0 可在程序内下载或从磁盘导入，换网络自动重启引擎。
+- AI 对弈与提示。KataGo v1.18.1，GTP over stdio。三档对弈方式：辅助、人机、机机；辅助档下 AI 只提示、不代为落子，提示标明这一手属于哪一方以及胜率与目差，也可让 AI 固定执黑或执白。对局与分析运行在两个独立的引擎进程上，避免争夺同一块 GPU；OpenCL 与 eigenavx2（纯 CPU）双后端，启动时自动挑选。
+- AI 分析与复盘。实时分析给出胜率、目差与候选点，局面变化时上一局面的结论原地保留、新结论到达后整体替换，不会先清空再填回；复盘把一整局逐手算一遍，按亏损的胜率点分为恶手、失误与小失误，给出胜率曲线、推荐着点，以及人和机器各自平均亏多少。
+- AI 模型可换。随包只带 4.7 MB 的 b6c96；b18c384nbt（93 MB，约 2630 万参数）、b28c512nbt（259 MB）与人类棋风网络 humanv0 可在程序内下载或从磁盘导入，换网络自动重启引擎。
 - 规则与棋谱。自写规则引擎，覆盖提子、自杀、劫、超级劫、终局数子（中国规则与日本规则）；完整 SGF 编辑，支持变化图、注释与各类标记，棋谱树不可变，编辑全部经纯函数；每一手记录来源（human / ai），存盘保留，送引擎前移除。
 - 棋盘识别。本地机器视觉管线：木色定位、网格线检测、网格拟合、交点环形取样。木色画得很亮、白子画成灰球面的客户端同样能认（亮度之外另有一条色度判据），并保留一个可选的视觉大模型接口作为兜底。
 - 网页同步。内置多标签浏览器，定时截屏识别后与本地局面逐点比对，只接受"恰好差一手"，并把这多出来的一手用逐点试下的方式验证，提子与打劫都算得对。
