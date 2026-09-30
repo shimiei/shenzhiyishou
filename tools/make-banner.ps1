@@ -6,6 +6,9 @@
 # 不是一个调子：底色 #14171c，强调色 #d9a441，正文 #e7ecf2，弱化 #96a1b0。
 # 棋盘那点纹理用程序里深色木纹的下半段（#c99a5e 到 #a97c46）压得很淡。
 # 字体用 Noto Serif SC（标题，衬线的更像棋谱）与 Microsoft YaHei UI（正文）。
+#
+# 这个文件带 UTF-8 BOM，别存成不带 BOM 的 UTF-8：Windows PowerShell 5.1 会按 ANSI 读，
+# 下面那些中文变成乱码，报的是「字符串缺少终止符」，看着像引号写错了。
 
 Add-Type -AssemblyName System.Drawing
 
