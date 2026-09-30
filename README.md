@@ -2,13 +2,11 @@
 
 <img src="docs/shots/banner.png" alt="神之一手：和 AI 下棋、看棋、改棋，也能从图片和网页里把棋谱捡回来" width="880">
 
-<a href="https://github.com/shimiei/shenzhiyishou/releases/latest"><img src="https://img.shields.io/badge/release-0.1.1-d9a441?style=flat-square&labelColor=1b2027" alt="最新发布 0.1.1"></a> <img src="https://img.shields.io/badge/platform-Windows%20x64-2b3138?style=flat-square&labelColor=1b2027" alt="Windows x64"> <img src="https://img.shields.io/badge/license-MIT-2b3138?style=flat-square&labelColor=1b2027" alt="MIT 许可"> <img src="https://img.shields.io/badge/engine-KataGo%201.18.1-2b3138?style=flat-square&labelColor=1b2027" alt="KataGo 1.18.1">
+<a href="https://github.com/shimiei/shenzhiyishou/releases/latest"><img src="https://img.shields.io/badge/release-0.1.1-b8860b?style=flat-square&labelColor=1b2027" alt="最新发布 0.1.1"></a> <img src="https://img.shields.io/badge/platform-Windows%20x64-2b3138?style=flat-square&labelColor=1b2027" alt="Windows x64"> <img src="https://img.shields.io/badge/license-MIT-2b3138?style=flat-square&labelColor=1b2027" alt="MIT 许可"> <img src="https://img.shields.io/badge/engine-KataGo%201.18.1-2b3138?style=flat-square&labelColor=1b2027" alt="KataGo 1.18.1">
 
 </div>
 
 # 神之一手
-
-Windows 上的围棋程序：和 AI 下棋、看棋、改棋，也能从图片和网页里把棋谱捡回来。
 
 ![主界面：一盘机机对局，右栏是实时分析](docs/shots/01-main.png)
 
